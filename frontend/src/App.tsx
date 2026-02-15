@@ -2,15 +2,38 @@ import { useEffect } from "react";
 import { useTasksStore } from "./store";
 import TaskList from "./components/TaskList";
 
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 15000;
 
 function App() {
   const fetchTasks = useTasksStore((s) => s.fetchTasks);
 
   useEffect(() => {
-    fetchTasks();
-    const intervalId = setInterval(fetchTasks, POLL_INTERVAL_MS);
-    return () => clearInterval(intervalId);
+    let intervalId: number | undefined;
+
+    const start = () => {
+      if (intervalId) return;
+      fetchTasks(); // immediate refresh
+      intervalId = window.setInterval(fetchTasks, POLL_INTERVAL_MS);
+    };
+
+    const stop = () => {
+      if (!intervalId) return;
+      window.clearInterval(intervalId);
+      intervalId = undefined;
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") start();
+      else stop();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    onVisibilityChange();
+
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [fetchTasks]);
 
   return (
