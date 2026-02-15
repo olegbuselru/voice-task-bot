@@ -1,0 +1,26 @@
+import { useEffect } from "react";
+import { useTasksStore } from "./store";
+import TaskList from "./components/TaskList";
+
+const POLL_INTERVAL_MS = 2000;
+
+function App() {
+  const fetchTasks = useTasksStore((s) => s.fetchTasks);
+
+  useEffect(() => {
+    fetchTasks();
+    const intervalId = setInterval(fetchTasks, POLL_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [fetchTasks]);
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <header className="mb-8">
+        <h1 className="text-2xl font-semibold text-slate-800">Голосовые задачи</h1>
+      </header>
+      <TaskList />
+    </div>
+  );
+}
+
+export default App;
