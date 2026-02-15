@@ -1,25 +1,22 @@
-FROM node:20-alpine AS builder
+FROM node:20-bullseye-slim
 
 WORKDIR /app
-COPY package.json package-lock.json* ./
+
+# Prisma + HTTPS certs + ffmpeg
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json ./
-COPY prisma ./prisma
-COPY src ./src
-RUN npx prisma generate && npm run build
 
-FROM node:20-alpine
+COPY . .
 
-RUN apk add --no-cache ffmpeg
-
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --only=production && npm cache clean --force
-COPY prisma ./prisma
 RUN npx prisma generate
-COPY --from=builder /app/dist ./dist
+RUN npm run build
 
 ENV NODE_ENV=production
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
+# Важно: миграции перед стартом
+CMD sh -c "npx prisma migrate deploy && node dist/server.js"
