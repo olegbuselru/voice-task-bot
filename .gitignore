@@ -27,3 +27,7 @@ backend/tmp/
 # IDE
 .vscode/
 .idea/
+
+# prisma sqlite local (nested prisma folder)
+backend/prisma/*.db
+backend/prisma/*.db-journal
