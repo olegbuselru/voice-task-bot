@@ -86,9 +86,13 @@
 
 - Parses transcript as: `<Client Full Name> <task text with optional date/time>`.
 - Uses OpenRouter NLU (`OPENROUTER_NLU_MODEL`, fallback `OPENROUTER_FALLBACK_MODEL`) to parse intents.
+- Applies deterministic post-guards after NLU parse:
+  - `set_working_hours -> create_appointment` when text has client+datetime cues but no schedule keywords/time-range.
+  - `create_appointment -> suggest_slots` when text asks for free slots without explicit create verbs.
 - Supports intents: create appointment, suggest slots (inline buttons), cancel with disambiguation pick-buttons, set working hours, mark done.
 - `/start` stores `telegramChatId` via settings bootstrap.
 - Voice flow keeps safe fallback to legacy `Task` creation when NLU is unknown/unusable.
+- Telegram entrypoint logs compact NLU traces (`tag:"nlu"`, text, intent, extracted fields, guard/model reason).
 
 ## Known pitfalls
 
@@ -99,6 +103,7 @@
 - Cron delivery depends on external scheduler pinging `/cron/daily` at 09:00 Bangkok with `CRON_SECRET`.
 - Existing historical tasks may have `clientId = null`; frontend should use "All clients" to see full history.
 - For frontend local build reliability, run in frontend cwd (`npm ci --include=dev && npm run build`) to ensure `vite` binary resolution.
+- Historical bad appointments created before the guard fix (e.g. slot-request notes or wrong historical dates) remain in DB and should be cleaned manually if needed.
 
 ## Current status (2026-02-16)
 
@@ -107,9 +112,12 @@
 - ✅ Frontend now treats `canceled` as dedicated status across board/list/calendar and includes a dedicated **Today agenda** view with quick actions.
 - ✅ Frontend routing migrated to BrowserRouter path routes: `/today`, `/board`, `/list`, `/calendar`.
 - ✅ Render SPA deep links configured via `frontend/public/_redirects` and root `render.yaml` rewrite.
+- ✅ Therapist NLU misrouting fix shipped: client+datetime messages no longer fall into `set_working_hours`.
+- ✅ `suggest_slots` safety guard shipped: slot-search phrasing is rerouted away from `create_appointment`.
+- ✅ Added backend regression script `npm -C backend run test:nlu-regression` for deterministic intent checks.
 
 ## Next steps
 
 - Deploy backend with the new Prisma migration `20260216124500_add_therapist_settings_draft`.
 - Redeploy frontend static site so deep links and today agenda are available in production.
-- Run end-to-end Telegram checks in production webhook chat: `/settings` wizard, ambiguous cancel pick, and daily agenda visibility.
+- Run end-to-end Telegram checks in production webhook chat: `/settings` wizard, ambiguous cancel pick, NLU guard traces, and daily agenda visibility.

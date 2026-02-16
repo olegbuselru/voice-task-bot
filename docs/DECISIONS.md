@@ -22,6 +22,13 @@
 - Voice/text commands go through NLU first; if not recognized, voice falls back to legacy task parser.
 - Slot suggestions use inline buttons; cancel uses disambiguation pick-buttons when multiple matches are found.
 
+## 2026-02-16 — Deterministic post-guards for therapist intents
+
+- Added a post-NLU deterministic guard layer before execution to reduce high-cost intent mistakes.
+- Guard 1: reroute `set_working_hours -> create_appointment` when message has client+datetime cues but no schedule keywords/time-range.
+- Guard 2: reroute `create_appointment -> suggest_slots` when message asks for free slots/availability without explicit create verbs.
+- Added compact NLU trace logs at Telegram entrypoint (`tag:"nlu"`, text, final intent, extracted fields, reason) for production diagnostics.
+
 ## 2026-02-16 — Daily agenda delivery strategy
 
 - Added protected endpoint `POST /cron/daily` using `CRON_SECRET` (query or header).

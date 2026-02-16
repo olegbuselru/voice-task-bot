@@ -218,11 +218,25 @@ Use the same `TELEGRAM_WEBHOOK_SECRET` as in backend env. Telegram will send `X-
 2. Backend receives update at `POST /telegram/webhook` (validated with `secret_token`).
 3. Bot gets `file_id`, downloads file, converts ogg → WAV (ffmpeg), sends for OpenRouter transcription.
 4. Transcript/text is passed to therapist NLU for intent/entity parsing.
+   - A deterministic guard layer then corrects known misroutes:
+     - `set_working_hours -> create_appointment` for client+datetime phrasing without schedule keywords/time-range.
+     - `create_appointment -> suggest_slots` for free-slot requests without explicit create verbs.
 5. Backend executes action:
    - appointment create/suggest/cancel/mark-done, or
    - settings update (working hours), or
    - fallback to legacy task creation.
 6. Data is stored in PostgreSQL; frontend displays unified cards in Board/List/Calendar.
+
+## Regression check (NLU guards)
+
+Run deterministic intent regression checks after backend changes:
+
+```bash
+cd backend
+npm run test:nlu-regression
+```
+
+This script validates critical therapist utterances (client+datetime, working-hours setup, free-slot requests) against expected post-guard intents.
 
 ### Frontend checklist (browser testing)
 
