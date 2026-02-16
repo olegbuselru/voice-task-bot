@@ -1,0 +1,10 @@
+services:
+  - type: static
+    name: voice-task-bot
+    rootDir: frontend
+    buildCommand: npm ci --include=dev && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

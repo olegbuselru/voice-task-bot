@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Toaster } from "sonner";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useTasksStore } from "./store";
 import Header from "./components/Header";
 import FiltersBar from "./components/Filters";
@@ -7,25 +8,28 @@ import AddTaskModal from "./components/AddTaskModal";
 import BoardView from "./features/tasks/Board/BoardView";
 import ListView from "./features/tasks/List/ListView";
 import CalendarView from "./features/tasks/Calendar/CalendarView";
+import TodayAgenda from "./features/tasks/Today/TodayAgenda";
 import Skeleton from "./components/ui/Skeleton";
 import type { ViewMode } from "./store";
 
 const AUTO_REFRESH_MS = 90_000; // 90 sec
-const VIEW_TO_HASH: Record<ViewMode, string> = {
-  board: "#/board",
-  list: "#/list",
-  calendar: "#/calendar",
+const VIEW_TO_PATH: Record<ViewMode, string> = {
+  today: "/today",
+  board: "/board",
+  list: "/list",
+  calendar: "/calendar",
 };
 
-function hashToViewMode(hash: string): ViewMode {
-  const route = hash.replace(/^#/, "").split("?")[0] || "/";
-  if (route === "/list") return "list";
-  if (route === "/calendar") return "calendar";
-  // /, /board and /tasks fall back to main board view
+function pathToViewMode(pathname: string): ViewMode {
+  if (pathname === "/today") return "today";
+  if (pathname === "/list") return "list";
+  if (pathname === "/calendar") return "calendar";
   return "board";
 }
 
-function App() {
+function AppShell() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const {
     fetchTasks,
     fetchClients,
@@ -52,14 +56,8 @@ function App() {
   }, [fetchTasks, selectedClientId]);
 
   useEffect(() => {
-    const syncFromHash = () => {
-      setViewMode(hashToViewMode(window.location.hash));
-    };
-
-    syncFromHash();
-    window.addEventListener("hashchange", syncFromHash);
-    return () => window.removeEventListener("hashchange", syncFromHash);
-  }, [setViewMode]);
+    setViewMode(pathToViewMode(location.pathname));
+  }, [location.pathname, setViewMode]);
 
   useEffect(() => {
     const onFocus = () => {
@@ -109,13 +107,13 @@ function App() {
 
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {
-      const nextHash = VIEW_TO_HASH[mode];
-      if (window.location.hash !== nextHash) {
-        window.location.hash = nextHash;
+      const nextPath = VIEW_TO_PATH[mode];
+      if (location.pathname !== nextPath) {
+        navigate(nextPath);
       }
       setViewMode(mode);
     },
-    [setViewMode]
+    [location.pathname, navigate, setViewMode]
   );
 
   if (error) {
@@ -163,6 +161,7 @@ function App() {
         </div>
       ) : (
         <>
+          {viewMode === "today" && <TodayAgenda />}
           {viewMode === "board" && <BoardView />}
           {viewMode === "list" && <ListView />}
           {viewMode === "calendar" && <CalendarView />}
@@ -174,6 +173,21 @@ function App() {
         onClose={() => setAddModalOpen(false)}
       />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to="/board" replace />} />
+        <Route path="/today" element={<AppShell />} />
+        <Route path="/board" element={<AppShell />} />
+        <Route path="/list" element={<AppShell />} />
+        <Route path="/calendar" element={<AppShell />} />
+        <Route path="*" element={<Navigate to="/board" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
