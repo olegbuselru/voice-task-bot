@@ -8,6 +8,22 @@ import { computeAvailabilitySlots } from "../services/scheduling";
 
 const router = Router();
 const prisma = new PrismaClient();
+const DEFAULT_TIMEZONE = process.env.TZ?.trim() || "Asia/Bangkok";
+
+function isValidTimezone(value: string | null | undefined): value is string {
+  if (!value || !value.trim()) return false;
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value.trim() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeTimezone(value: string | null | undefined): string {
+  if (isValidTimezone(value)) return value.trim();
+  return DEFAULT_TIMEZONE;
+}
 
 function parseDateValue(input: unknown): Date | null {
   if (typeof input !== "string" || !input.trim()) return null;
@@ -55,11 +71,12 @@ async function resolveClientId(body: {
 }
 
 function getTodayRange(timezone: string): { from: Date; to: Date } {
+  const tz = safeTimezone(timezone);
   const now = new Date();
-  const dayKey = formatInTimeZone(now, timezone, "yyyy-MM-dd");
+  const dayKey = formatInTimeZone(now, tz, "yyyy-MM-dd");
   return {
-    from: zonedTimeToUtc(`${dayKey}T00:00:00`, timezone),
-    to: zonedTimeToUtc(`${dayKey}T23:59:59`, timezone),
+    from: zonedTimeToUtc(`${dayKey}T00:00:00`, tz),
+    to: zonedTimeToUtc(`${dayKey}T23:59:59`, tz),
   };
 }
 
@@ -100,10 +117,15 @@ router.put("/settings", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    if (typeof timezone === "string" && timezone.trim() && !isValidTimezone(timezone.trim())) {
+      res.status(400).json({ error: "timezone must be a valid IANA timezone" });
+      return;
+    }
+
     const updated = await prisma.therapistSettings.upsert({
       where: { telegramChatId: telegramChatId.trim() },
       update: {
-        timezone: typeof timezone === "string" && timezone.trim() ? timezone.trim() : undefined,
+        timezone: typeof timezone === "string" && timezone.trim() ? safeTimezone(timezone.trim()) : undefined,
         workDays: Array.isArray(workDays) ? workDays.filter((d): d is string => typeof d === "string") : undefined,
         workStart: typeof workStart === "string" ? workStart : undefined,
         workEnd: typeof workEnd === "string" ? workEnd : undefined,
@@ -112,7 +134,7 @@ router.put("/settings", async (req: Request, res: Response): Promise<void> => {
       },
       create: {
         telegramChatId: telegramChatId.trim(),
-        timezone: typeof timezone === "string" && timezone.trim() ? timezone.trim() : (process.env.TZ || "Asia/Bangkok"),
+        timezone: typeof timezone === "string" && timezone.trim() ? safeTimezone(timezone.trim()) : safeTimezone(process.env.TZ),
         workDays: Array.isArray(workDays)
           ? workDays.filter((d): d is string => typeof d === "string")
           : ["mon", "tue", "wed", "thu", "fri"],
@@ -262,6 +284,7 @@ router.get("/availability", async (req: Request, res: Response): Promise<void> =
       return;
     }
 
+    const timezone = safeTimezone(settings.timezone);
     const from = parseDateValue(req.query.from) ?? startOfDay(new Date());
     const to = parseDateValue(req.query.to) ?? endOfDay(addDays(new Date(), 7));
     const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 8));
@@ -279,7 +302,7 @@ router.get("/availability", async (req: Request, res: Response): Promise<void> =
       from,
       to,
       settings: {
-        timezone: settings.timezone,
+        timezone,
         workDays: settings.workDays,
         workStart: settings.workStart,
         workEnd: settings.workEnd,

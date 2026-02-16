@@ -24,6 +24,8 @@ export interface ActionResult {
   buttons?: InlineButton[];
 }
 
+const DEFAULT_TIMEZONE = process.env.TZ?.trim() || "Asia/Bangkok";
+
 const SLOT_KEYWORDS_RE = /(свободн\w*\s+слот|слоты|окна|когда\s+можно|подбери\s+слот|предложи\s+слот)/i;
 const CREATE_VERBS_RE = /(запиши|запис[ьа]ть|создай\s+запись|поставь\s+запись|назначь\s+встречу)/i;
 
@@ -33,6 +35,21 @@ function looksLikeSuggestSlotsRequest(text: string): boolean {
 
 function hasExplicitCreateVerb(text: string): boolean {
   return CREATE_VERBS_RE.test(text);
+}
+
+function isValidTimezone(value: string | null | undefined): value is string {
+  if (!value || !value.trim()) return false;
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value.trim() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeTimezone(value: string | null | undefined): string {
+  if (isValidTimezone(value)) return value.trim();
+  return DEFAULT_TIMEZONE;
 }
 
 function parseDateLike(value: string | undefined): Date | null {
@@ -63,7 +80,7 @@ function mapActionType(type: TherapistAction["type"]): AppointmentKind {
 export function defaultSettings(chatId: string | null): Omit<TherapistSettings, "id" | "createdAt" | "updatedAt"> {
   return {
     telegramChatId: chatId ?? "unknown",
-    timezone: process.env.TZ?.trim() || "Asia/Bangkok",
+    timezone: safeTimezone(process.env.TZ?.trim()),
     workDays: ["mon", "tue", "wed", "thu", "fri"],
     workStart: "10:00",
     workEnd: "18:00",
@@ -103,7 +120,7 @@ async function resolveClient(prisma: PrismaClient, clientName?: string): Promise
 
 function asWorkingSettings(settings: TherapistSettings): WorkingSettings {
   return {
-    timezone: settings.timezone,
+    timezone: safeTimezone(settings.timezone),
     workDays: settings.workDays,
     workStart: settings.workStart,
     workEnd: settings.workEnd,
@@ -177,7 +194,7 @@ export async function executeTherapistAction(params: {
       action.days_of_week && action.days_of_week.length > 0 ? action.days_of_week : settings.workDays;
     const nextStart = action.start_time || settings.workStart;
     const nextEnd = action.end_time || settings.workEnd;
-    const nextTz = action.timezone || settings.timezone;
+    const nextTz = isValidTimezone(action.timezone) ? action.timezone.trim() : safeTimezone(settings.timezone);
 
     await prisma.therapistSettings.update({
       where: { id: settings.id },
@@ -206,6 +223,7 @@ export async function executeTherapistAction(params: {
     }
 
     const settings = (await getSettings(prisma, chatId)) ?? (await ensureSettings(prisma, chatId || "default"));
+    const timezone = safeTimezone(settings.timezone);
     const endAt = new Date(startAt.getTime() + settings.sessionMinutes * 60_000);
 
     await prisma.appointment.create({
@@ -220,7 +238,7 @@ export async function executeTherapistAction(params: {
     });
 
     return {
-      text: `Сделал: запись для ${client.displayName} на ${formatSlot(startAt, endAt, settings.timezone)} создана.`,
+      text: `Сделал: запись для ${client.displayName} на ${formatSlot(startAt, endAt, timezone)} создана.`,
     };
   }
 
@@ -231,6 +249,7 @@ export async function executeTherapistAction(params: {
     }
 
     const settings = (await getSettings(prisma, chatId)) ?? (await ensureSettings(prisma, chatId || "default"));
+    const timezone = safeTimezone(settings.timezone);
     const range = parseRange(action);
     const busy = await prisma.appointment.findMany({
       where: {
@@ -256,7 +275,7 @@ export async function executeTherapistAction(params: {
     return {
       text: `Сделал: нашел свободные слоты для ${client.displayName}. Выберите вариант:`,
       buttons: slots.map((slot) => ({
-        text: formatSlot(slot.startAt, slot.endAt, settings.timezone),
+        text: formatSlot(slot.startAt, slot.endAt, timezone),
         callbackData: `slot|${client.id}|${slot.startAt.getTime()}`,
       })),
     };
@@ -264,6 +283,7 @@ export async function executeTherapistAction(params: {
 
   if (action.intent === "cancel_appointment") {
     const settings = (await getSettings(prisma, chatId)) ?? (await ensureSettings(prisma, chatId || "default"));
+    const timezone = safeTimezone(settings.timezone);
     const where: {
       status: AppointmentStatus;
       startAt?: { gte?: Date; lte?: Date };
@@ -314,7 +334,7 @@ export async function executeTherapistAction(params: {
         text: `Сделал: запись отменена — ${single.client.displayName} ${formatSlot(
           single.startAt,
           single.endAt,
-          settings.timezone
+          timezone
         )}.`,
       };
     }
@@ -323,7 +343,7 @@ export async function executeTherapistAction(params: {
       text: "Сделал: нашел несколько подходящих записей. Выберите, какую отменить:",
       buttons: [
         ...candidates.map((candidate) => ({
-          text: `${formatSlot(candidate.startAt, candidate.endAt, settings.timezone)} — ${candidate.client.displayName}`,
+          text: `${formatSlot(candidate.startAt, candidate.endAt, timezone)} — ${candidate.client.displayName}`,
           callbackData: `cancel_pick|${candidate.id}`,
         })),
         { text: "Отмена", callbackData: "cancel_no|0" },
