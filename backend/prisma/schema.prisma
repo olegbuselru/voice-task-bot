@@ -28,4 +28,47 @@ model Client {
   normalizedName String   @unique
   createdAt      DateTime @default(now())
   tasks          Task[]
+  appointments   Appointment[]
+}
+
+enum AppointmentStatus {
+  planned
+  done
+  canceled
+}
+
+enum AppointmentKind {
+  session
+  homework
+  admin
+  other
+}
+
+model Appointment {
+  id        String            @id @default(uuid())
+  clientId  String
+  client    Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  startAt   DateTime
+  endAt     DateTime
+  status    AppointmentStatus @default(planned)
+  kind      AppointmentKind   @default(session)
+  notes     String?
+  createdAt DateTime          @default(now())
+
+  @@index([clientId])
+  @@index([startAt])
+  @@index([status])
+}
+
+model TherapistSettings {
+  id             String   @id @default(uuid())
+  telegramChatId String   @unique
+  timezone       String   @default("Asia/Bangkok")
+  workDays       String[] @default(["mon", "tue", "wed", "thu", "fri"])
+  workStart      String   @default("10:00")
+  workEnd        String   @default("18:00")
+  sessionMinutes Int      @default(50)
+  bufferMinutes  Int      @default(10)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }

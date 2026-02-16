@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { getWebhookCallback } from "./telegram";
 import tasksRoutes from "./routes/tasks";
+import therapistRoutes from "./routes/therapist";
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -23,6 +24,7 @@ app.post("/telegram/webhook", (req, res, next) => {
 });
 
 app.use("/", tasksRoutes);
+app.use("/", therapistRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
