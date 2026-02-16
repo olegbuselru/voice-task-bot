@@ -27,6 +27,7 @@ backend/tmp/
 # IDE
 .vscode/
 .idea/
+.windsurf/
 
 # prisma sqlite local (nested prisma folder)
 backend/prisma/*.db
