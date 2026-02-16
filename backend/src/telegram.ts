@@ -1,6 +1,6 @@
 import { Telegraf, Context } from "telegraf";
 import { message } from "telegraf/filters";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { processVoiceMessage } from "./services/transcription";
 import {
   parseTherapistVoiceTranscript,
@@ -38,6 +38,73 @@ const TIME_START_OPTIONS = ["09:00", "10:00", "11:00", "12:00"];
 const TIME_END_OPTIONS = ["17:00", "18:00", "19:00", "20:00"];
 const TZ_OPTIONS = ["Asia/Bangkok", "Europe/Moscow", "UTC"] as const;
 
+function truncateForLog(value: string | null | undefined, max = 200): string {
+  if (!value) return "";
+  return value.length > max ? `${value.slice(0, max)}...` : value;
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ tag: "logging_fallback", note: "json_stringify_failed" });
+  }
+}
+
+function serializeError(err: unknown): { name: string; message: string; stack?: string; code?: string } {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      code: err.code,
+    };
+  }
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+    };
+  }
+  return {
+    name: "UnknownError",
+    message: String(err),
+  };
+}
+
+function isDraftTableMissingError(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) {
+    return false;
+  }
+  if (err.code !== "P2021" && err.code !== "P2022") {
+    return false;
+  }
+  return /TherapistSettingsDraft/i.test(err.message);
+}
+
+function logHandlerError(params: {
+  tag: string;
+  err: unknown;
+  chatId?: string | null;
+  text?: string;
+  intent?: string;
+  callbackData?: string;
+}): void {
+  const { tag, err, chatId, text, intent, callbackData } = params;
+  const serialized = serializeError(err);
+  console.error(
+    safeStringify({
+      tag,
+      chatId: chatId ?? null,
+      text: truncateForLog(text),
+      intent: intent ?? null,
+      callbackData: truncateForLog(callbackData),
+      error: serialized,
+    })
+  );
+}
+
 function encodeTimeForCallback(value: string): string {
   return value.replace(":", "-");
 }
@@ -66,6 +133,24 @@ async function getDraft(chatId: string) {
       bufferMinutes: settings.bufferMinutes,
     },
   });
+}
+
+async function safeFindDraft(chatId: string): Promise<Awaited<ReturnType<typeof prisma.therapistSettingsDraft.findUnique>> | null> {
+  try {
+    return await prisma.therapistSettingsDraft.findUnique({
+      where: { telegramChatId: chatId },
+    });
+  } catch (err) {
+    if (isDraftTableMissingError(err)) {
+      logHandlerError({
+        tag: "draft_lookup_error",
+        err,
+        chatId,
+      });
+      return null;
+    }
+    throw err;
+  }
 }
 
 async function resetDraft(chatId: string) {
@@ -143,21 +228,30 @@ function toInlineKeyboard(buttons: Array<{ text: string; callbackData: string }>
 }
 
 function logNluTrace(text: string, action: TherapistAction | null): void {
-  const payload = {
-    tag: "nlu",
-    text,
-    intent: action?.intent ?? "unknown",
-    extracted: {
-      clientName: action?.client_name,
-      startAt: action?.start_datetime,
-      endAt: action?.to,
-      workStart: action?.start_time,
-      workEnd: action?.end_time,
-      range: action?.range,
-    },
-    confidenceOrReason: action?.confidenceOrReason ?? "no_action",
-  };
-  console.info(JSON.stringify(payload));
+  try {
+    const payload = {
+      tag: "nlu",
+      text: truncateForLog(text),
+      intent: action?.intent ?? "unknown",
+      extracted: {
+        clientName: action?.client_name,
+        startAt: action?.start_datetime,
+        endAt: action?.to,
+        workStart: action?.start_time,
+        workEnd: action?.end_time,
+        range: action?.range,
+      },
+      confidenceOrReason: action?.confidenceOrReason ?? "no_action",
+    };
+    console.info(safeStringify(payload));
+  } catch (err) {
+    logHandlerError({
+      tag: "nlu_trace_error",
+      err,
+      text,
+      intent: action?.intent,
+    });
+  }
 }
 
 function createBot(): Telegraf {
@@ -191,6 +285,8 @@ function createBot(): Telegraf {
   });
 
   bot.on(message("voice"), async (ctx: Context) => {
+    let transcriptForLog = "";
+    let parsedIntentForLog: string | undefined;
     try {
       const msg = ctx.message;
       if (!msg || !("voice" in msg)) {
@@ -208,12 +304,14 @@ function createBot(): Telegraf {
         return;
       }
       const transcript = await processVoiceMessage(bot, fileId);
+      transcriptForLog = transcript;
       if (!transcript || transcript.trim().length === 0) {
         await ctx.reply("Не удалось распознать речь. Попробуйте ещё раз.");
         return;
       }
 
       const nluAction = await nluParseCommand(transcript);
+      parsedIntentForLog = nluAction?.intent;
       logNluTrace(transcript, nluAction);
       if (nluAction && nluAction.intent !== "unknown") {
         const result = await executeTherapistAction({
@@ -271,30 +369,30 @@ function createBot(): Telegraf {
       const clientPrefix = parsed.clientDisplayName ? `[${parsed.clientDisplayName}] ` : "";
       await ctx.reply(`Задача создана${deadlineStr}: ${clientPrefix}${task.text}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("Voice message processing error:", msg);
-      if (msg.includes("OPENROUTER_API_KEY") || msg.includes("OpenRouter")) {
-        console.error("Check OPENROUTER_API_KEY and OpenRouter API availability.");
-      }
-      if (msg.includes("connect") || msg.includes("ECONNREFUSED") || msg.includes("Prisma")) {
-        console.error("Check DATABASE_URL and database availability.");
-      }
+      logHandlerError({
+        tag: "voice_handler_error",
+        err,
+        chatId: getChatId(ctx),
+        text: transcriptForLog,
+        intent: parsedIntentForLog,
+      });
       await ctx.reply("Ошибка при обработке голосового сообщения. Попробуйте позже.");
     }
   });
 
   bot.on(message("text"), async (ctx: Context) => {
+    let textForLog = "";
+    let parsedIntentForLog: string | undefined;
     try {
       const msg = ctx.message;
       if (!msg || !("text" in msg)) return;
       const text = msg.text?.trim();
       if (!text) return;
+      textForLog = text;
 
       const chatId = getChatId(ctx);
       if (chatId) {
-        const draft = await prisma.therapistSettingsDraft.findUnique({
-          where: { telegramChatId: chatId },
-        });
+        const draft = await safeFindDraft(chatId);
         if (draft?.step === "time_start_manual" || draft?.step === "time_end_manual") {
           if (!isValidHHMM(text)) {
             await ctx.reply("Неверный формат. Введите время как HH:MM, например 10:30.");
@@ -343,6 +441,7 @@ function createBot(): Telegraf {
       }
 
       const action = await nluParseCommand(text);
+      parsedIntentForLog = action?.intent;
       logNluTrace(text, action);
       if (!action || action.intent === "unknown") {
         return;
@@ -362,16 +461,25 @@ function createBot(): Telegraf {
       } else {
         await ctx.reply(result.text);
       }
-    } catch {
+    } catch (err) {
+      logHandlerError({
+        tag: "text_handler_error",
+        err,
+        chatId: getChatId(ctx),
+        text: textForLog,
+        intent: parsedIntentForLog,
+      });
       await ctx.reply("Ошибка обработки команды. Попробуйте позже.");
     }
   });
 
   bot.on("callback_query", async (ctx: Context) => {
+    let callbackDataForLog = "";
     try {
       const callback = (ctx as unknown as { callbackQuery?: { data?: string } }).callbackQuery;
       const data = callback?.data;
       if (!data) return;
+      callbackDataForLog = data;
 
       const chatId = getChatId(ctx);
 
@@ -685,7 +793,13 @@ function createBot(): Telegraf {
         await ctx.reply("Сделал: отмену не выполняю.");
         await answerCallback(ctx, "Оставили запись");
       }
-    } catch {
+    } catch (err) {
+      logHandlerError({
+        tag: "callback_handler_error",
+        err,
+        chatId: getChatId(ctx),
+        callbackData: callbackDataForLog,
+      });
       await ctx.reply("Ошибка обработки действия. Попробуйте позже.");
     }
   });
