@@ -2,6 +2,8 @@ import { AppointmentStatus, PendingActionType, Prisma, PrismaClient, TherapistSe
 import { addDays, endOfDay, startOfDay, subDays } from "date-fns";
 import { formatInTimeZone, zonedTimeToUtc } from "date-fns-tz";
 import type { Context } from "telegraf";
+import { computeAvailabilitySlots } from "./scheduling";
+import { normalizeClientName } from "./taskParser";
 
 const DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const DAY_LABELS: Record<(typeof DAY_ORDER)[number], string> = {
@@ -20,6 +22,15 @@ const TZ_OPTIONS = ["Asia/Bangkok", "Europe/Moscow", "UTC"];
 
 type ScreenName = "home" | "today" | "week" | "day" | "settings" | "appointment_card" | "clients" | "new";
 
+interface NewWizardPayload {
+  step?: "client" | "day" | "time" | "confirm";
+  clientId?: string;
+  clientName?: string;
+  dayIso?: string;
+  selectedPendingId?: string;
+  slotOptions?: Array<{ pendingId: string; label: string }>;
+}
+
 interface ScreenRenderResult {
   screen: ScreenName;
   step: string;
@@ -28,6 +39,30 @@ interface ScreenRenderResult {
   payload?: Record<string, unknown>;
   weekAnchor?: Date;
   dayIso?: string;
+}
+
+function asWorkingSettings(settings: TherapistSettings) {
+  return {
+    timezone: safeTimezone(settings),
+    workDays: settings.workDays,
+    workStart: settings.workStart,
+    workEnd: settings.workEnd,
+    sessionMinutes: settings.sessionMinutes,
+    bufferMinutes: settings.bufferMinutes,
+  };
+}
+
+function parsePageNumber(raw: string | undefined, fallback = 1): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
+function slotsFromPayload(payload: NewWizardPayload): Array<{ pendingId: string; label: string }> {
+  if (!Array.isArray(payload.slotOptions)) return [];
+  return payload.slotOptions.filter(
+    (slot): slot is { pendingId: string; label: string } => !!slot && typeof slot.pendingId === "string" && typeof slot.label === "string"
+  );
 }
 
 interface RenderParams {
@@ -299,6 +334,132 @@ async function buildScreen(params: RenderParams): Promise<ScreenRenderResult> {
     };
   }
 
+  if (screen === "clients") {
+    const payload = (params.payload ?? {}) as Record<string, unknown>;
+    const page = parsePageNumber(typeof payload.page === "number" ? String(payload.page) : undefined, 1);
+    const take = 10;
+    const skip = (page - 1) * take;
+
+    const [clients, total] = await Promise.all([
+      prisma.client.findMany({ orderBy: { displayName: "asc" }, skip, take }),
+      prisma.client.count(),
+    ]);
+
+    const lines = clients.length
+      ? clients.map((c, idx) => `${skip + idx + 1}) ${c.displayName}`)
+      : ["Клиенты не найдены."];
+
+    const keyboard: Array<Array<{ text: string; callback_data: string }>> = [
+      ...clients.map((c) => [{ text: c.displayName, callback_data: `cl:open:${c.id}` }]),
+      [
+        ...(page > 1 ? [{ text: "◀️", callback_data: `cl:list:page:${page - 1}` }] : []),
+        ...(skip + take < total ? [{ text: "▶️", callback_data: `cl:list:page:${page + 1}` }] : []),
+        { text: "🔎 Поиск", callback_data: "cl:search" },
+      ],
+      [
+        { text: "➕ Новый клиент", callback_data: "cl:new" },
+        { text: "🏠 Домой", callback_data: "scr:home" },
+      ],
+    ];
+
+    return {
+      screen: "clients",
+      step: "list",
+      payload: { page },
+      text: [`👤 Клиенты (стр. ${page})`, "", ...lines].join("\n"),
+      keyboard,
+    };
+  }
+
+  if (screen === "new") {
+    const payload = (params.payload ?? {}) as NewWizardPayload;
+    const step = payload.step ?? "client";
+
+    if (step === "client") {
+      const recent = await prisma.client.findMany({ orderBy: { createdAt: "desc" }, take: 5 });
+      return {
+        screen: "new",
+        step,
+        payload: { ...payload, step },
+        text: ["➕ Новая запись", "Шаг 1/3: Клиент", "Выберите клиента или используйте поиск."].join("\n"),
+        keyboard: [
+          ...recent.map((c) => [{ text: c.displayName, callback_data: `nw:client:pick:${c.id}` }]),
+          [
+            { text: "🔎 Поиск", callback_data: "nw:client:search" },
+            { text: "➕ Новый клиент", callback_data: "cl:new" },
+            { text: "🚪 Выход", callback_data: "nw:exit" },
+          ],
+        ],
+      };
+    }
+
+    if (step === "day") {
+      const dayButtons = [0, 1, 2, 3, 4, 5, 6].map((offset) => {
+        const iso = isoDayInTz(addDays(new Date(), offset), timezone);
+        return { text: dayTitle(zonedTimeToUtc(`${iso}T00:00:00`, timezone), timezone), callback_data: `nw:day:pick:${iso}` };
+      });
+      return {
+        screen: "new",
+        step,
+        payload: { ...payload, step },
+        text: ["➕ Новая запись", "Шаг 2/3: День", "Выберите день:"].join("\n"),
+        keyboard: [
+          [
+            { text: "Сегодня", callback_data: "nw:day:today" },
+            { text: "Завтра", callback_data: "nw:day:tomorrow" },
+          ],
+          dayButtons.slice(0, 3),
+          dayButtons.slice(3, 6),
+          [dayButtons[6]],
+          [
+            { text: "← Назад", callback_data: "scr:new" },
+            { text: "🚪 Выход", callback_data: "nw:exit" },
+          ],
+        ],
+      };
+    }
+
+    if (step === "time") {
+      const slots = payload.slotOptions ?? [];
+      const lines = slots.length
+        ? slots.map((slot, idx) => `${idx + 1}) ${slot.label}`)
+        : ["Нет доступных слотов. Выберите другой день."];
+      return {
+        screen: "new",
+        step,
+        payload: { ...payload, step },
+        text: ["➕ Новая запись", "Шаг 3/3: Время", ...lines].join("\n"),
+        keyboard: [
+          ...slots.slice(0, 10).map((slot) => [{ text: slot.label, callback_data: `nw:time:pick:${slot.pendingId}` }]),
+          [
+            { text: "← Назад", callback_data: "nw:back:day" },
+            { text: "🚪 Выход", callback_data: "nw:exit" },
+          ],
+        ],
+      };
+    }
+
+    if (step === "confirm") {
+      const selected = slotsFromPayload(payload).find((s) => s.pendingId === payload.selectedPendingId);
+      return {
+        screen: "new",
+        step,
+        payload: { ...payload, step },
+        text: [
+          "Подтвердите запись:",
+          `${payload.clientName ?? "Клиент"}, ${selected?.label ?? "выбранный слот"}`,
+        ].join("\n"),
+        keyboard: [
+          [
+            { text: "✅ Создать", callback_data: `nw:save:${payload.selectedPendingId ?? ""}` },
+            { text: "❌ Отмена", callback_data: "nw:exit" },
+          ],
+          [{ text: "🏠 Домой", callback_data: "scr:home" }],
+        ],
+      };
+    }
+  }
+
   if (screen === "settings") {
     const payload = (params.payload ?? {}) as Record<string, unknown>;
     const days = (payload.days as string[]) ?? settings.workDays;
@@ -451,6 +612,10 @@ export async function tryHandleNavigationText(prisma: PrismaClient, ctx: Context
     await renderScreen({ prisma, ctx, chatId, screen: "settings" });
     return true;
   }
+  if (normalized === "новая запись") {
+    await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" } });
+    return true;
+  }
   return false;
 }
 
@@ -529,9 +694,190 @@ export async function handleUiCallback(prisma: PrismaClient, ctx: Context, chatI
     await renderScreen({ prisma, ctx, chatId, screen: "settings", preferredMessageId });
     return true;
   }
-  if (data === "scr:clients" || data === "scr:new" || data === "cl:search") {
+  if (data === "scr:clients") {
+    await renderScreen({ prisma, ctx, chatId, screen: "clients", payload: { page: 1 }, preferredMessageId });
+    return true;
+  }
+  if (data.startsWith("cl:list:page:")) {
+    const page = parsePageNumber(data.slice("cl:list:page:".length), 1);
+    await renderScreen({ prisma, ctx, chatId, screen: "clients", payload: { page }, preferredMessageId });
+    return true;
+  }
+  if (data.startsWith("cl:open:")) {
+    const clientId = data.slice("cl:open:".length);
+    await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "day", clientId }, preferredMessageId });
+    return true;
+  }
+  if (data === "cl:search" || data === "nw:client:search" || data === "cl:new") {
+    await ctx.reply("Введите имя клиента для поиска.");
+    await renderScreen({ prisma, ctx, chatId, screen: "clients", payload: { page: 1 }, preferredMessageId });
+    return true;
+  }
+
+  if (data === "scr:new") {
+    await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" }, preferredMessageId });
+    return true;
+  }
+  if (data.startsWith("nw:client:pick:")) {
+    const clientId = data.slice("nw:client:pick:".length);
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) {
+      await ctx.reply("Клиент не найден. Выберите другого.");
+      return true;
+    }
+    await renderScreen({
+      prisma,
+      ctx,
+      chatId,
+      screen: "new",
+      payload: { step: "day", clientId: client.id, clientName: client.displayName },
+      preferredMessageId,
+    });
+    return true;
+  }
+
+  if (data === "nw:day:today" || data === "nw:day:tomorrow" || data.startsWith("nw:day:pick:")) {
+    const statePayload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as NewWizardPayload;
+    const dayIso = data === "nw:day:today"
+      ? isoDayInTz(new Date(), safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))
+      : data === "nw:day:tomorrow"
+      ? isoDayInTz(addDays(new Date(), 1), safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))
+      : data.slice("nw:day:pick:".length);
+
+    const settings = await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } });
+    if (!settings) return true;
+    const timezone = safeTimezone(settings);
+
+    const clientId = String(statePayload.clientId || "");
+    const client = clientId ? await prisma.client.findUnique({ where: { id: clientId } }) : null;
+    if (!client) {
+      await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" }, preferredMessageId });
+      return true;
+    }
+
+    const range = rangeForIsoDay(dayIso, timezone);
+    const busy = await prisma.appointment.findMany({
+      where: {
+        status: { not: AppointmentStatus.canceled },
+        startAt: { gte: range.from, lte: range.to },
+      },
+      select: { startAt: true, endAt: true },
+      orderBy: { startAt: "asc" },
+    });
+
+    const slots = computeAvailabilitySlots({
+      from: range.from,
+      to: range.to,
+      settings: asWorkingSettings(settings),
+      appointments: busy,
+      limit: 8,
+    });
+
+    const slotOptions: Array<{ pendingId: string; label: string }> = [];
+    for (const slot of slots) {
+      const pending = await prisma.pendingAction.create({
+        data: {
+          chatId,
+          type: PendingActionType.pick_slot,
+          payloadJson: {
+            clientId: client.id,
+            clientName: client.displayName,
+            startAtIso: slot.startAt.toISOString(),
+            endAtIso: slot.endAt.toISOString(),
+          } as Prisma.InputJsonValue,
+          expiresAt: addDays(new Date(), 1),
+        },
+      });
+      slotOptions.push({ pendingId: pending.id, label: `${hhmm(slot.startAt, timezone)}-${hhmm(slot.endAt, timezone)}` });
+    }
+
+    await renderScreen({
+      prisma,
+      ctx,
+      chatId,
+      screen: "new",
+      payload: {
+        step: "time",
+        clientId: client.id,
+        clientName: client.displayName,
+        dayIso,
+        slotOptions,
+      },
+      preferredMessageId,
+    });
+    return true;
+  }
+
+  if (data.startsWith("nw:time:pick:")) {
+    const pendingId = data.slice("nw:time:pick:".length);
+    const statePayload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as NewWizardPayload;
+    await renderScreen({
+      prisma,
+      ctx,
+      chatId,
+      screen: "new",
+      payload: {
+        ...statePayload,
+        step: "confirm",
+        selectedPendingId: pendingId,
+      },
+      preferredMessageId,
+    });
+    return true;
+  }
+
+  if (data.startsWith("nw:save:")) {
+    const pendingId = data.slice("nw:save:".length);
+    const pending = await prisma.pendingAction.findUnique({ where: { id: pendingId } });
+    if (!pending || pending.chatId !== chatId || pending.type !== PendingActionType.pick_slot || pending.expiresAt < new Date()) {
+      await ctx.reply("Слот устарел. Выберите заново.");
+      await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" }, preferredMessageId });
+      return true;
+    }
+    const payload = pending.payloadJson as Record<string, unknown>;
+    const clientId = String(payload.clientId || "");
+    const startAtIso = String(payload.startAtIso || "");
+    const endAtIso = String(payload.endAtIso || "");
+    if (!clientId || !startAtIso || !endAtIso) {
+      await ctx.reply("Не удалось создать запись из выбранного слота.");
+      return true;
+    }
+    const created = await prisma.appointment.create({
+      data: {
+        clientId,
+        startAt: new Date(startAtIso),
+        endAt: new Date(endAtIso),
+        status: AppointmentStatus.planned,
+      },
+      include: { client: { select: { displayName: true } } },
+    });
+    await prisma.pendingAction.delete({ where: { id: pending.id } });
+    await ctx.reply(
+      [
+        "Ок, записал:",
+        `${created.client.displayName}`,
+        `${dayTitle(created.startAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))} • ${hhmm(created.startAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))}-${hhmm(created.endAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))}`,
+      ].join("\n")
+    );
+    await renderScreen({
+      prisma,
+      ctx,
+      chatId,
+      screen: "appointment_card",
+      payload: { appointmentId: created.id },
+      preferredMessageId,
+    });
+    return true;
+  }
+
+  if (data === "nw:back:day") {
+    const statePayload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as NewWizardPayload;
+    await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { ...statePayload, step: "day" }, preferredMessageId });
+    return true;
+  }
+
+  if (data === "nw:exit") {
     await renderScreen({ prisma, ctx, chatId, screen: "home", preferredMessageId });
-    await ctx.reply("Раздел будет расширен на следующем шаге. Используйте кнопки Сегодня/Неделя/Настройки.");
     return true;
   }
 
