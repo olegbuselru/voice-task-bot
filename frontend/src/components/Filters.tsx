@@ -13,7 +13,9 @@ export default function FiltersBar({ filters, onFiltersChange }: FiltersProps) {
     filters.status ||
     filters.priority ||
     filters.overdue ||
-    filters.todayOnly
+    filters.todayOnly ||
+    filters.dateFrom ||
+    filters.dateTo
   );
 
   const clearAll = () => {
@@ -22,6 +24,8 @@ export default function FiltersBar({ filters, onFiltersChange }: FiltersProps) {
       priority: null,
       overdue: false,
       todayOnly: false,
+      dateFrom: "",
+      dateTo: "",
     });
   };
 
@@ -79,6 +83,20 @@ export default function FiltersBar({ filters, onFiltersChange }: FiltersProps) {
         />
         <span className="text-sm text-purple-700">На сегодня</span>
       </label>
+      <input
+        type="date"
+        value={filters.dateFrom}
+        onChange={(e) => onFiltersChange({ dateFrom: e.target.value })}
+        className="rounded-lg border border-purple-200 px-3 py-2 text-sm focus:border-purple-400 outline-none bg-white/80"
+        aria-label="Дата от"
+      />
+      <input
+        type="date"
+        value={filters.dateTo}
+        onChange={(e) => onFiltersChange({ dateTo: e.target.value })}
+        className="rounded-lg border border-purple-200 px-3 py-2 text-sm focus:border-purple-400 outline-none bg-white/80"
+        aria-label="Дата до"
+      />
       {hasActive && (
         <Button variant="ghost" size="sm" onClick={clearAll}>
           <X size={16} />

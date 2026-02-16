@@ -5,6 +5,21 @@ export interface Client {
   createdAt: string;
 }
 
+export type AppointmentStatus = "planned" | "done" | "canceled";
+export type AppointmentKind = "session" | "homework" | "admin" | "other";
+
+export interface ApiAppointment {
+  id: string;
+  clientId: string;
+  client: Pick<Client, "id" | "displayName" | "normalizedName">;
+  startAt: string;
+  endAt: string;
+  status: AppointmentStatus;
+  kind: AppointmentKind;
+  notes: string | null;
+  createdAt: string;
+}
+
 /** Raw task from API */
 export interface ApiTask {
   id: string;
@@ -17,6 +32,11 @@ export interface ApiTask {
   completedAt: string | null;
   clientId?: string | null;
   client?: Pick<Client, "id" | "displayName" | "normalizedName"> | null;
+  appointmentId?: string;
+  startAt?: string;
+  endAt?: string;
+  appointmentStatus?: AppointmentStatus;
+  appointmentKind?: AppointmentKind;
 }
 
 /** Kanban columns */

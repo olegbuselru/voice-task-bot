@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { ApiTask, Client } from "./types";
+import type { ApiTask, ApiAppointment, Client, AppointmentStatus, AppointmentKind } from "./types";
 
 const envBaseURL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
 const baseURL = (envBaseURL && envBaseURL.length > 0
@@ -25,6 +25,60 @@ export async function fetchClients(): Promise<Client[]> {
 
 export async function fetchClientTasks(clientId: string): Promise<ApiTask[]> {
   const { data } = await api.get<ApiTask[]>(`/clients/${clientId}/tasks`);
+  return data;
+}
+
+export interface FetchAppointmentsParams {
+  from?: string;
+  to?: string;
+  clientId?: string;
+  status?: AppointmentStatus;
+}
+
+export async function fetchAppointments(params: FetchAppointmentsParams = {}): Promise<ApiAppointment[]> {
+  const { data } = await api.get<ApiAppointment[]>("/appointments", { params });
+  return data;
+}
+
+export interface CreateAppointmentPayload {
+  clientId?: string;
+  clientName?: string;
+  startAt: string;
+  endAt?: string;
+  kind?: AppointmentKind;
+  status?: AppointmentStatus;
+  notes?: string | null;
+}
+
+export async function createAppointment(payload: CreateAppointmentPayload): Promise<ApiAppointment> {
+  const { data } = await api.post<ApiAppointment>("/appointments", payload);
+  return data;
+}
+
+export async function updateAppointment(
+  id: string,
+  payload: Partial<CreateAppointmentPayload>
+): Promise<ApiAppointment> {
+  const { data } = await api.patch<ApiAppointment>(`/appointments/${id}`, payload);
+  return data;
+}
+
+export async function cancelAppointment(id: string): Promise<ApiAppointment> {
+  const { data } = await api.delete<ApiAppointment>(`/appointments/${id}`);
+  return data;
+}
+
+export interface AvailabilitySlot {
+  startAt: string;
+  endAt: string;
+}
+
+export async function fetchAvailability(params: {
+  from?: string;
+  to?: string;
+  limit?: number;
+} = {}): Promise<AvailabilitySlot[]> {
+  const { data } = await api.get<AvailabilitySlot[]>("/availability", { params });
   return data;
 }
 

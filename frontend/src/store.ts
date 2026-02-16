@@ -4,8 +4,11 @@ import type { Task, ColumnId, Client } from "./types";
 import type { ApiTask } from "./api";
 import {
   fetchTasks as apiFetchTasks,
+  fetchAppointments as apiFetchAppointments,
   fetchClients as apiFetchClients,
   fetchClientTasks as apiFetchClientTasks,
+  createAppointment as apiCreateAppointment,
+  updateAppointment as apiUpdateAppointment,
   createTask as apiCreateTask,
   completeTask as apiCompleteTask,
   reopenTask as apiReopenTask,
@@ -22,6 +25,8 @@ export interface Filters {
   priority: string | null;
   overdue: boolean;
   todayOnly: boolean;
+  dateFrom: string;
+  dateTo: string;
 }
 
 const DEFAULT_FILTERS: Filters = {
@@ -31,7 +36,47 @@ const DEFAULT_FILTERS: Filters = {
   priority: null,
   overdue: false,
   todayOnly: false,
+  dateFrom: "",
+  dateTo: "",
 };
+
+function appointmentKindLabel(kind?: string): string {
+  if (kind === "homework") return "Домашка";
+  if (kind === "admin") return "Админ";
+  if (kind === "other") return "Задача";
+  return "Сессия";
+}
+
+function mapAppointmentToTask(appointment: {
+  id: string;
+  clientId: string;
+  client: { id: string; displayName: string; normalizedName: string };
+  startAt: string;
+  endAt: string;
+  status: "planned" | "done" | "canceled";
+  kind: "session" | "homework" | "admin" | "other";
+  notes: string | null;
+  createdAt: string;
+}): ApiTask {
+  const textSuffix = appointment.notes?.trim() || appointmentKindLabel(appointment.kind);
+  return {
+    id: appointment.id,
+    text: `${appointment.client.displayName} — ${textSuffix}`,
+    originalText: appointment.notes?.trim() || textSuffix,
+    important: false,
+    deadline: appointment.startAt,
+    status: appointment.status === "planned" ? "active" : "completed",
+    createdAt: appointment.createdAt,
+    completedAt: appointment.status === "planned" ? null : appointment.endAt,
+    clientId: appointment.clientId,
+    client: appointment.client,
+    appointmentId: appointment.id,
+    startAt: appointment.startAt,
+    endAt: appointment.endAt,
+    appointmentStatus: appointment.status,
+    appointmentKind: appointment.kind,
+  };
+}
 
 function inferColumn(task: ApiTask, overrides: OverridesMap): ColumnId {
   const ov = overrides[task.id];
@@ -103,9 +148,17 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     const activeClientId = clientId ?? get().selectedClientId;
     set({ loading: true, error: null });
     try {
-      const rawTasks = activeClientId
-        ? await apiFetchClientTasks(activeClientId)
-        : await apiFetchTasks();
+      let rawTasks: ApiTask[];
+      try {
+        const appointments = await apiFetchAppointments({
+          clientId: activeClientId ?? undefined,
+        });
+        rawTasks = appointments.map(mapAppointmentToTask);
+      } catch {
+        rawTasks = activeClientId
+          ? await apiFetchClientTasks(activeClientId)
+          : await apiFetchTasks();
+      }
       const overrides = loadOverrides();
       const tasks = mergeTasks(rawTasks, overrides);
       set({
@@ -136,10 +189,27 @@ export const useTasksStore = create<TasksState>((set, get) => ({
   createTask: async (payload) => {
     try {
       const selectedClientId = get().selectedClientId;
-      const task = await apiCreateTask({
-        ...payload,
-        clientId: payload.clientId ?? selectedClientId ?? undefined,
-      });
+      const startAt = payload.dueAt ?? payload.deadline;
+      let task: ApiTask;
+
+      if (selectedClientId && typeof startAt === "string" && startAt.trim().length > 0) {
+        const appointment = await apiCreateAppointment({
+          clientId: payload.clientId ?? selectedClientId,
+          startAt,
+          notes:
+            (typeof payload.title === "string" && payload.title.trim()) ||
+            (typeof payload.text === "string" && payload.text.trim()) ||
+            (typeof payload.originalText === "string" && payload.originalText.trim()) ||
+            null,
+        });
+        task = mapAppointmentToTask(appointment);
+      } else {
+        task = await apiCreateTask({
+          ...payload,
+          clientId: payload.clientId ?? selectedClientId ?? undefined,
+        });
+      }
+
       const overrides = loadOverrides();
       const shouldShowInCurrentView =
         !selectedClientId || task.clientId === selectedClientId;
@@ -158,6 +228,13 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     const { tasks, rawTasks } = get();
     const task = tasks.find((t) => t.id === id);
     if (!task) return;
+
+    if (task.appointmentId) {
+      const nextStatus = task.appointmentStatus === "planned" ? "done" : "planned";
+      await apiUpdateAppointment(task.appointmentId, { status: nextStatus });
+      await get().fetchTasks(get().selectedClientId);
+      return;
+    }
 
     // Optimistic update
     const newStatus: "active" | "completed" =
@@ -180,7 +257,10 @@ export const useTasksStore = create<TasksState>((set, get) => ({
       } else {
         await apiReopenTask(id);
       }
-      const rawTasksNext = await apiFetchTasks();
+      const selectedClientId = get().selectedClientId;
+      const rawTasksNext = selectedClientId
+        ? await apiFetchClientTasks(selectedClientId)
+        : await apiFetchTasks();
       set({ rawTasks: rawTasksNext, tasks: mergeTasks(rawTasksNext, overrides) });
     } catch (err) {
       // Revert
@@ -281,8 +361,25 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     }
     if (filters.todayOnly) {
       out = out.filter((t) => {
-        if (!t.deadline || t.status === "completed") return false;
-        return isToday(parseISO(t.deadline));
+        const dateValue = t.startAt ?? t.deadline;
+        if (!dateValue || t.status === "completed") return false;
+        return isToday(parseISO(dateValue));
+      });
+    }
+    if (filters.dateFrom) {
+      const from = new Date(`${filters.dateFrom}T00:00:00`).getTime();
+      out = out.filter((t) => {
+        const dateValue = t.startAt ?? t.deadline;
+        if (!dateValue) return false;
+        return parseISO(dateValue).getTime() >= from;
+      });
+    }
+    if (filters.dateTo) {
+      const to = new Date(`${filters.dateTo}T23:59:59`).getTime();
+      out = out.filter((t) => {
+        const dateValue = t.startAt ?? t.deadline;
+        if (!dateValue) return false;
+        return parseISO(dateValue).getTime() <= to;
       });
     }
     return out;
