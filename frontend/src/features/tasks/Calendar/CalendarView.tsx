@@ -30,9 +30,15 @@ export default function CalendarView() {
     .map((t) => {
       const d = parseISO(t.deadline!);
       const clientPrefix = t.client?.displayName ? `[${t.client.displayName}] ` : "";
+      const statusPrefix =
+        t.appointmentStatus === "canceled" || t.status === "canceled"
+          ? "[Canceled] "
+          : t.appointmentStatus === "done" || t.status === "completed"
+            ? "[Done] "
+            : "";
       return {
         id: t.id,
-        title: `${clientPrefix}${t.text}`,
+        title: `${statusPrefix}${clientPrefix}${t.text}`,
         start: startOfDay(d),
         end: endOfDay(d),
         task: t,
@@ -81,13 +87,35 @@ export default function CalendarView() {
           event: "Событие",
           noEventsInRange: "Нет задач в этом диапазоне",
         }}
-        eventPropGetter={() => ({
-          style: {
-            backgroundColor: "rgba(196, 181, 253, 0.8)",
-            border: "1px solid rgba(167, 139, 250, 0.8)",
-            borderRadius: "8px",
-          },
-        })}
+        eventPropGetter={(event: CalendarEvent) => {
+          const status = event.task.appointmentStatus ?? (event.task.status === "canceled" ? "canceled" : "planned");
+          if (status === "canceled") {
+            return {
+              style: {
+                backgroundColor: "rgba(251, 191, 191, 0.7)",
+                border: "1px solid rgba(239, 68, 68, 0.8)",
+                borderRadius: "8px",
+                textDecoration: "line-through",
+              },
+            };
+          }
+          if (status === "done") {
+            return {
+              style: {
+                backgroundColor: "rgba(167, 243, 208, 0.75)",
+                border: "1px solid rgba(16, 185, 129, 0.85)",
+                borderRadius: "8px",
+              },
+            };
+          }
+          return {
+            style: {
+              backgroundColor: "rgba(196, 181, 253, 0.8)",
+              border: "1px solid rgba(167, 139, 250, 0.8)",
+              borderRadius: "8px",
+            },
+          };
+        }}
       />
     </div>
   );

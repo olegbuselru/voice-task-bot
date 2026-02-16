@@ -24,7 +24,7 @@ export default function AddTaskModal({
   isOpen,
   onClose,
   initialText = "",
-  initialColumn = "inbox",
+  initialColumn = "planned",
 }: AddTaskModalProps) {
   const createTask = useTasksStore((s) => s.createTask);
 
@@ -148,10 +148,9 @@ export default function AddTaskModal({
               defaultValue={initialColumn}
               className="w-full rounded-xl border border-purple-200 px-4 py-2.5 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 outline-none transition bg-white"
             >
-              <option value="inbox">Inbox</option>
-              <option value="today">Today</option>
               <option value="planned">Planned</option>
               <option value="done">Done</option>
+              <option value="canceled">Canceled</option>
             </select>
           </div>
 

@@ -4,7 +4,7 @@ import type { ColumnId } from "../../../types";
 import TaskCard from "./TaskCard";
 import EmptyState from "../../../components/ui/EmptyState";
 import type { Task } from "../../../types";
-import { Inbox, Calendar, CalendarClock, CheckCircle } from "lucide-react";
+import { CalendarClock, CheckCircle, CircleOff } from "lucide-react";
 
 interface ColumnProps {
   id: ColumnId;
@@ -13,10 +13,9 @@ interface ColumnProps {
 }
 
 const ICONS: Record<ColumnId, React.ReactNode> = {
-  inbox: <Inbox size={20} />,
-  today: <Calendar size={20} />,
   planned: <CalendarClock size={20} />,
   done: <CheckCircle size={20} />,
+  canceled: <CircleOff size={20} />,
 };
 
 export default function Column({ id, label, tasks }: ColumnProps) {
@@ -45,7 +44,13 @@ export default function Column({ id, label, tasks }: ColumnProps) {
         {tasks.length === 0 && (
           <EmptyState
             title="Пусто"
-            description={id === "done" ? "Выполненные задачи появятся здесь" : "Перетащите задачу сюда"}
+            description={
+              id === "done"
+                ? "Завершенные записи появятся здесь"
+                : id === "canceled"
+                  ? "Отмененные записи появятся здесь"
+                  : "Перетащите запись сюда"
+            }
           />
         )}
       </div>

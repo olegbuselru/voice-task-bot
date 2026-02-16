@@ -1,4 +1,4 @@
-import { LayoutGrid, List, Calendar } from "lucide-react";
+import { LayoutGrid, List, Calendar, SunMedium } from "lucide-react";
 import Button from "./ui/Button";
 import VoiceAdd from "../features/voice/VoiceAdd";
 import type { ViewMode } from "../store";
@@ -61,8 +61,19 @@ export default function Header({
 
         <div className="flex rounded-xl overflow-hidden border border-purple-200 bg-white/80">
           <button
-            onClick={() => onViewModeChange("board")}
+            onClick={() => onViewModeChange("today")}
             className={`flex items-center gap-2 px-4 py-2.5 font-semibold transition-colors ${
+              viewMode === "today"
+                ? "bg-purple-500 text-white"
+                : "text-purple-600 hover:bg-purple-50"
+            }`}
+          >
+            <SunMedium size={18} />
+            Today
+          </button>
+          <button
+            onClick={() => onViewModeChange("board")}
+            className={`flex items-center gap-2 px-4 py-2.5 font-semibold transition-colors border-l border-purple-200 ${
               viewMode === "board"
                 ? "bg-purple-500 text-white"
                 : "text-purple-600 hover:bg-purple-50"

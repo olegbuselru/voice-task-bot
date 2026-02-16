@@ -41,8 +41,8 @@ export default function ListView() {
     const overTask = tasks.find((t) => t.id === overId);
     if (!task || !overTask) return;
 
-    const taskCol = task.column ?? "inbox";
-    const overCol = overTask.column ?? "inbox";
+    const taskCol = task.column ?? "planned";
+    const overCol = overTask.column ?? "planned";
     if (taskCol === overCol) {
       const fromIdx = tasks.indexOf(task);
       const toIdx = tasks.indexOf(overTask);
@@ -70,6 +70,7 @@ export default function ListView() {
                 <th className="w-10 py-3 pl-4 text-left"></th>
                 <th className="py-3 text-left font-semibold text-purple-800">Задача</th>
                 <th className="py-3 text-left font-semibold text-purple-800">Колонка</th>
+                <th className="py-3 text-left font-semibold text-purple-800">Статус</th>
                 <th className="py-3 text-left font-semibold text-purple-800">Срок</th>
                 <th className="py-3 text-left font-semibold text-purple-800">Приоритет</th>
               </tr>

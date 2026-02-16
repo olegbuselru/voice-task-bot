@@ -28,6 +28,18 @@ export default function ListTaskRow({ task }: ListTaskRowProps) {
   };
 
   const isActive = task.status === "active";
+  const statusLabel =
+    task.appointmentStatus === "canceled" || task.status === "canceled"
+      ? "Canceled"
+      : task.appointmentStatus === "done" || task.status === "completed"
+        ? "Done"
+        : "Planned";
+  const statusClass =
+    statusLabel === "Canceled"
+      ? "bg-rose-100 text-rose-600"
+      : statusLabel === "Done"
+        ? "bg-emerald-100 text-emerald-700"
+        : "bg-indigo-100 text-indigo-700";
   const deadline = task.deadline ? parseISO(task.deadline) : null;
   const isOverdue = deadline && isPast(deadline) && !isToday(deadline) && isActive;
   const columnLabel = COLUMNS.find((c) => c.id === task.column)?.label ?? task.column;
@@ -71,6 +83,11 @@ export default function ListTaskRow({ task }: ListTaskRowProps) {
         </label>
       </td>
       <td className="py-3 text-sm text-purple-600">{columnLabel}</td>
+      <td className="py-3 text-sm">
+        <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClass}`}>
+          {statusLabel}
+        </span>
+      </td>
       <td className="py-3">
         {deadline ? (
           <span className={isOverdue ? "text-rose-500 text-sm" : "text-purple-500 text-sm"}>

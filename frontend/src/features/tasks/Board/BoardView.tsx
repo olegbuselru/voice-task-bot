@@ -50,9 +50,9 @@ export default function BoardView() {
 
     // Dropped on another task
     const overTask = filtered.find((t) => t.id === overId);
-    const taskColumn = task.column ?? "inbox";
+    const taskColumn = task.column ?? "planned";
     if (overTask) {
-      const overColumn = overTask.column ?? "inbox";
+      const overColumn = overTask.column ?? "planned";
       if (overColumn !== taskColumn) {
         setColumn(taskId, overColumn);
       } else {

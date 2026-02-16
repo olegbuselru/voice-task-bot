@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { loadOverrides, setOverride, type OverridesMap } from "./lib/overrides";
 
-export type ViewMode = "board" | "list" | "calendar";
+export type ViewMode = "today" | "board" | "list" | "calendar";
 
 export interface Filters {
   search: string;
@@ -59,13 +59,19 @@ function mapAppointmentToTask(appointment: {
   createdAt: string;
 }): ApiTask {
   const textSuffix = appointment.notes?.trim() || appointmentKindLabel(appointment.kind);
+  const mappedStatus: ApiTask["status"] =
+    appointment.status === "planned"
+      ? "active"
+      : appointment.status === "done"
+        ? "completed"
+        : "canceled";
   return {
     id: appointment.id,
     text: `${appointment.client.displayName} — ${textSuffix}`,
     originalText: appointment.notes?.trim() || textSuffix,
     important: false,
     deadline: appointment.startAt,
-    status: appointment.status === "planned" ? "active" : "completed",
+    status: mappedStatus,
     createdAt: appointment.createdAt,
     completedAt: appointment.status === "planned" ? null : appointment.endAt,
     clientId: appointment.clientId,
@@ -81,11 +87,8 @@ function mapAppointmentToTask(appointment: {
 function inferColumn(task: ApiTask, overrides: OverridesMap): ColumnId {
   const ov = overrides[task.id];
   if (ov?.column) return ov.column;
-  if (task.status === "completed") return "done";
-  if (!task.deadline) return "inbox";
-  const d = parseISO(task.deadline);
-  if (isToday(d)) return "today";
-  if (isPast(d)) return "inbox"; // overdue -> inbox
+  if (task.appointmentStatus === "canceled" || task.status === "canceled") return "canceled";
+  if (task.appointmentStatus === "done" || task.status === "completed") return "done";
   return "planned";
 }
 
@@ -121,6 +124,7 @@ interface TasksState {
   fetchClients: () => Promise<void>;
   createTask: (payload: CreateTaskPayload) => Promise<Task | null>;
   toggleTask: (id: string) => Promise<void>;
+  setAppointmentStatus: (id: string, status: "planned" | "done" | "canceled") => Promise<void>;
   setColumn: (taskId: string, column: ColumnId) => void;
   setOrder: (taskId: string, column: ColumnId, newOrder: number) => void;
   reorderTasks: (columnId: ColumnId, fromIndex: number, toIndex: number) => void;
@@ -269,10 +273,26 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     }
   },
 
+  setAppointmentStatus: async (id, status) => {
+    const task = get().tasks.find((t) => t.id === id);
+    if (!task?.appointmentId) return;
+    await apiUpdateAppointment(task.appointmentId, { status });
+    await get().fetchTasks(get().selectedClientId);
+  },
+
   setColumn: (taskId, column) => {
     const { rawTasks, overrides } = get();
     const task = rawTasks.find((t) => t.id === taskId);
     const isDone = column === "done";
+
+    if (task?.appointmentId) {
+      const nextStatus =
+        column === "done" ? "done" : column === "canceled" ? "canceled" : "planned";
+      apiUpdateAppointment(task.appointmentId, { status: nextStatus })
+        .then(() => get().fetchTasks(get().selectedClientId))
+        .catch(() => {});
+      return;
+    }
 
     if (task && isDone && task.status === "active") {
       apiCompleteTask(taskId)
@@ -285,7 +305,7 @@ export const useTasksStore = create<TasksState>((set, get) => ({
         .catch(() => {});
       return;
     }
-    if (task && !isDone && task.status === "completed") {
+    if (task && column === "planned" && task.status === "completed") {
       apiReopenTask(taskId)
         .then(() => {
           const next = rawTasks.map((t) =>
@@ -355,14 +375,14 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     }
     if (filters.overdue) {
       out = out.filter((t) => {
-        if (!t.deadline || t.status === "completed") return false;
+        if (!t.deadline || t.status !== "active") return false;
         return isPast(parseISO(t.deadline)) && !isToday(parseISO(t.deadline));
       });
     }
     if (filters.todayOnly) {
       out = out.filter((t) => {
         const dateValue = t.startAt ?? t.deadline;
-        if (!dateValue || t.status === "completed") return false;
+        if (!dateValue || t.status !== "active") return false;
         return isToday(parseISO(dateValue));
       });
     }

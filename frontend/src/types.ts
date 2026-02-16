@@ -27,7 +27,7 @@ export interface ApiTask {
   originalText: string;
   important: boolean;
   deadline: string | null;
-  status: "active" | "completed";
+  status: "active" | "completed" | "canceled";
   createdAt: string;
   completedAt: string | null;
   clientId?: string | null;
@@ -40,7 +40,7 @@ export interface ApiTask {
 }
 
 /** Kanban columns */
-export type ColumnId = "inbox" | "today" | "planned" | "done";
+export type ColumnId = "planned" | "done" | "canceled";
 
 /** Extended task for UI (includes overrides) */
 export interface Task extends ApiTask {
@@ -57,8 +57,7 @@ export interface Task extends ApiTask {
 }
 
 export const COLUMNS: { id: ColumnId; label: string }[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "today", label: "Today" },
   { id: "planned", label: "Planned" },
   { id: "done", label: "Done" },
+  { id: "canceled", label: "Canceled" },
 ];
