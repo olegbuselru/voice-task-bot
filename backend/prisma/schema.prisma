@@ -73,6 +73,43 @@ model TherapistSettings {
   updatedAt      DateTime @updatedAt
 }
 
+enum PendingActionType {
+  pick_slot
+  confirm_cancel
+  reschedule
+  confirm_reschedule
+  confirm_settings_save
+  confirm_create_appointment
+}
+
+model ConversationState {
+  id            String   @id @default(uuid())
+  chatId        String   @unique
+  screen        String
+  step          String
+  payloadJson   Json?
+  screenMessageId String?
+  weekAnchor    DateTime?
+  dayIso        String?
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+
+  @@index([screen])
+}
+
+model PendingAction {
+  id          String            @id @default(uuid())
+  chatId      String
+  type        PendingActionType
+  payloadJson Json
+  expiresAt   DateTime
+  createdAt   DateTime          @default(now())
+
+  @@index([chatId])
+  @@index([expiresAt])
+  @@index([type])
+}
+
 model TherapistSettingsDraft {
   id             String   @id @default(uuid())
   telegramChatId String   @unique

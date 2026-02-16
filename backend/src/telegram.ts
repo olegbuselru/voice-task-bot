@@ -9,6 +9,13 @@ import {
 } from "./services/taskParser";
 import { nluParseCommand, type TherapistAction } from "./services/therapistNlu";
 import { ensureSettings, executeTherapistAction } from "./services/therapistExecutor";
+import {
+  openHomeScreen,
+  renderScreen,
+  tryHandleNavigationText,
+  handleWizardTextInput,
+  handleUiCallback,
+} from "./services/telegramUi";
 
 const prisma = new PrismaClient();
 
@@ -266,10 +273,10 @@ function createBot(): Telegraf {
       const chatId = getChatId(ctx);
       if (chatId) {
         await ensureSettings(prisma, chatId);
+        await openHomeScreen(prisma, ctx, chatId);
+        return;
       }
-      await ctx.reply(
-        "Готово. Отправьте голосом или текстом команду: запись, свободные слоты, отмена, рабочие часы."
-      );
+      await ctx.reply("Не вижу чат для запуска интерфейса. Попробуйте /start в личном чате.");
     } catch {
       await ctx.reply("Не удалось инициализировать настройки. Попробуйте позже.");
     }
@@ -281,7 +288,7 @@ function createBot(): Telegraf {
       await ctx.reply("Не вижу чат для сохранения настроек.");
       return;
     }
-    await openSettingsMenu(ctx, chatId);
+    await renderScreen({ prisma, ctx, chatId, screen: "settings" });
   });
 
   bot.on(message("voice"), async (ctx: Context) => {
@@ -391,52 +398,15 @@ function createBot(): Telegraf {
       textForLog = text;
 
       const chatId = getChatId(ctx);
-      if (chatId) {
-        const draft = await safeFindDraft(chatId);
-        if (draft?.step === "time_start_manual" || draft?.step === "time_end_manual") {
-          if (!isValidHHMM(text)) {
-            await ctx.reply("Неверный формат. Введите время как HH:MM, например 10:30.");
-            return;
-          }
-          if (draft.step === "time_start_manual") {
-            await prisma.therapistSettingsDraft.update({
-              where: { telegramChatId: chatId },
-              data: { startTime: text, step: "time_end" },
-            });
-            await ctx.reply("Начало сохранено. Теперь выберите конец рабочего дня:", {
-              reply_markup: {
-                inline_keyboard: [
-                  TIME_END_OPTIONS.map((value) => ({
-                    text: value,
-                    callback_data: `settings:time:end:set:${encodeTimeForCallback(value)}`,
-                  })),
-                  [{ text: "Ввести вручную", callback_data: "settings:time:end:manual" }],
-                  [{ text: "Назад", callback_data: "settings:open" }],
-                ],
-              },
-            });
-            return;
-          }
-
-          await prisma.therapistSettingsDraft.update({
-            where: { telegramChatId: chatId },
-            data: { endTime: text, step: "confirm" },
-          });
-          await ctx.reply("Время сохранено. Перейдите к подтверждению.", {
-            reply_markup: {
-              inline_keyboard: [[{ text: "К подтверждению", callback_data: "settings:confirm" }]],
-            },
-          });
-          return;
-        }
-      }
+      if (chatId && (await handleWizardTextInput(prisma, ctx, chatId, text))) return;
+      if (chatId && (await tryHandleNavigationText(prisma, ctx, chatId, text))) return;
 
       if (text === "/settings" || /^настройки$/i.test(text)) {
         if (!chatId) {
           await ctx.reply("Не вижу чат для сохранения настроек.");
           return;
         }
-        await openSettingsMenu(ctx, chatId);
+        await renderScreen({ prisma, ctx, chatId, screen: "settings" });
         return;
       }
 
@@ -482,6 +452,11 @@ function createBot(): Telegraf {
       callbackDataForLog = data;
 
       const chatId = getChatId(ctx);
+
+      if (chatId && (await handleUiCallback(prisma, ctx, chatId, data))) {
+        await answerCallback(ctx, "Ок");
+        return;
+      }
 
       if (data.startsWith("settings:")) {
         if (!chatId) {
