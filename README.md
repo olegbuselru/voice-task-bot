@@ -1,20 +1,20 @@
-# Telegram Voice-to-Task System
+# Telegram Voice Task Bot (Therapist Mode)
 
-Production-ready system: voice messages in Telegram → cloud transcription (OpenAI Whisper) → parsing (Russian time + "важно") → PostgreSQL → React SPA.
+Production-ready system: Telegram voice/text → OpenRouter transcription + NLU → deterministic scheduling/task execution → PostgreSQL → React SPA (board/list/calendar).
 
 ## Architecture
 
 - **Telegram Bot** (webhook mode) receives voice messages.
-- **Backend** (Node.js + Express) downloads voice (ogg/opus), converts to WAV via ffmpeg, transcribes with **OpenAI Whisper API**, parses with chrono-node (Russian), normalizes timezone (Europe/Moscow → UTC), stores in PostgreSQL.
-- **Frontend** (React + Vite + Tailwind + Zustand) shows active/completed tasks, checkbox toggle, red highlight for important, deadline in Moscow time.
+- **Backend** (Node.js + Express) downloads voice (ogg/opus), converts to WAV via ffmpeg, transcribes via **OpenRouter**, parses therapist intents, computes availability deterministically, stores tasks/clients/appointments in PostgreSQL.
+- **Frontend** (React + Vite + Tailwind + Zustand + dnd-kit) — anime-inspired task tracker: Board (Kanban), List, Calendar, voice add (Web Speech API), drag & drop, search, filters, toasts.
 
 ## Prerequisites
 
 - Node.js 20+
 - PostgreSQL
 - Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- OpenAI API key (for speech-to-text)
-- **ffmpeg** (for ogg → wav conversion before sending to OpenAI)
+- OpenRouter API key (for speech-to-text + NLU)
+- **ffmpeg** (for ogg → wav conversion before sending to OpenRouter)
 
 ## Setup (local)
 
@@ -30,7 +30,7 @@ brew install ffmpeg
 cd voice-task-bot
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-# Edit backend/.env: DATABASE_URL (PostgreSQL), TELEGRAM_*, OPENAI_API_KEY, FRONTEND_ORIGIN
+# Edit backend/.env: DATABASE_URL (PostgreSQL), TELEGRAM_*, OPENROUTER_*, CRON_SECRET, FRONTEND_ORIGIN
 # Edit frontend/.env: VITE_API_BASE_URL=http://localhost:3000
 ```
 
@@ -44,7 +44,11 @@ TELEGRAM_BOT_TOKEN=<from BotFather>
 TELEGRAM_WEBHOOK_SECRET=<random string for webhook verification>
 BASE_URL=https://your-public-url.com
 FRONTEND_ORIGIN=http://localhost:5173
-OPENAI_API_KEY=sk-...
+OPENROUTER_API_KEY=<your-openrouter-api-key>
+OPENROUTER_TRANSCRIBE_MODEL=<optional, e.g. openai/whisper-1>
+OPENROUTER_NLU_MODEL=<optional>
+OPENROUTER_FALLBACK_MODEL=<optional>
+CRON_SECRET=<random-secret-for-/cron/daily>
 ```
 
 **Frontend (`frontend/.env`)**:
@@ -97,7 +101,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. Ensure `VITE_API_BASE_URL` points to the backend (e.g. `http://localhost:3000`). The app polls `GET /tasks` every 2 seconds.
+Open http://localhost:5173. Ensure `VITE_API_BASE_URL` points to the backend (e.g. `http://localhost:3000`). The app fetches on load, refetches on focus (if >60s since last fetch), auto-refreshes every 90s when tab is visible, and has a manual refresh button.
 
 ## Migrations
 
@@ -107,15 +111,24 @@ Open http://localhost:5173. Ensure `VITE_API_BASE_URL` points to the backend (e.
 ## API
 
 - `GET /health` — health check (200 OK).
-- `GET /tasks` — list all tasks (JSON).
-- `POST /tasks` — create task (body: `{ text, originalText?, important?, deadline? }`).
+- `GET /tasks` — list all tasks (now may include optional `client`).
+- `POST /tasks` — create task (compatible with `{ text }`, extended with `title`, `deadline|dueAt`, `clientId|clientName`).
 - `PATCH /tasks/:id/complete` — mark completed.
 - `PATCH /tasks/:id/reopen` — reopen task.
+- `GET /clients` — list clients.
+- `GET /clients/:id/tasks` — tasks for a specific client.
+- `GET /appointments` — list appointments (`from`, `to`, `clientId`, `status`).
+- `POST /appointments` — create appointment (`clientId` or `clientName`, `startAt`, optional `endAt`, `kind`, `notes`).
+- `PATCH /appointments/:id` — update appointment.
+- `DELETE /appointments/:id` — soft-cancel appointment.
+- `GET /settings`, `PUT /settings` — therapist scheduling settings.
+- `GET /availability` — computed free slots.
+- `POST /cron/daily` — daily agenda sender (requires `CRON_SECRET`).
 - `POST /telegram/webhook` — Telegram webhook (do not call manually).
 
 ## Deploy to production
 
-Backend must run 24/7 with PostgreSQL and OpenAI; frontend can be static. Two example setups.
+Backend must run 24/7 with PostgreSQL and OpenRouter; frontend can be static. Two example setups.
 
 ### Scenario A: Render (backend) + Supabase (DB) + Vercel (frontend)
 
@@ -134,7 +147,11 @@ Backend must run 24/7 with PostgreSQL and OpenAI; frontend can be static. Two ex
      - `TELEGRAM_WEBHOOK_SECRET` — random secret (same as in webhook URL)  
      - `BASE_URL` — `https://<your-render-service>.onrender.com`  
      - `FRONTEND_ORIGIN` — `https://your-app.vercel.app` (no trailing slash)  
-     - `OPENAI_API_KEY`  
+     - `OPENROUTER_API_KEY`
+     - `OPENROUTER_TRANSCRIBE_MODEL` (optional)
+     - `OPENROUTER_NLU_MODEL` (optional)
+     - `OPENROUTER_FALLBACK_MODEL` (optional)
+     - `CRON_SECRET`
    - After deploy, set Telegram webhook to `https://<your-render-service>.onrender.com/telegram/webhook` with the same `secret_token`.
 
 3. **Vercel (Frontend)**  
@@ -156,7 +173,11 @@ Backend must run 24/7 with PostgreSQL and OpenAI; frontend can be static. Two ex
      - `TELEGRAM_WEBHOOK_SECRET`  
      - `BASE_URL` — `https://<your-app>.fly.dev`  
      - `FRONTEND_ORIGIN` — `https://your-app.vercel.app`  
-     - `OPENAI_API_KEY`  
+     - `OPENROUTER_API_KEY`
+     - `OPENROUTER_TRANSCRIBE_MODEL` (optional)
+     - `OPENROUTER_NLU_MODEL` (optional)
+     - `OPENROUTER_FALLBACK_MODEL` (optional)
+     - `CRON_SECRET`
    - Dockerfile already runs `prisma migrate deploy` before `node dist/server.js`.  
    - Deploy, then set Telegram webhook to `https://<your-app>.fly.dev/telegram/webhook` with the same `secret_token`.
 
@@ -184,14 +205,33 @@ Use the same `TELEGRAM_WEBHOOK_SECRET` as in backend env. Telegram will send `X-
 | Backend     | `TELEGRAM_WEBHOOK_SECRET` | Secret for webhook verification |
 | Backend     | `BASE_URL`              | Public HTTPS URL of the backend |
 | Backend     | `FRONTEND_ORIGIN`       | Allowed CORS origin (e.g. Vercel URL) |
-| Backend     | `OPENAI_API_KEY`       | OpenAI API key for Whisper |
-| Frontend    | `VITE_API_BASE_URL`     | Backend API URL (e.g. Render/Fly URL) |
+| Backend     | `OPENROUTER_API_KEY`   | OpenRouter API key |
+| Backend     | `OPENROUTER_TRANSCRIBE_MODEL` | Optional override for transcription model |
+| Backend     | `OPENROUTER_NLU_MODEL` | Optional override for NLU model |
+| Backend     | `OPENROUTER_FALLBACK_MODEL` | Optional fallback model |
+| Backend     | `CRON_SECRET`          | Secret for `POST /cron/daily` |
+| Frontend    | `VITE_API_BASE_URL`     | Backend API URL (e.g. `https://voice-task-bot-backend.onrender.com` — no trailing slash) |
 
 ## End-to-end flow
 
 1. User sends a voice message to the Telegram bot.
 2. Backend receives update at `POST /telegram/webhook` (validated with `secret_token`).
-3. Bot gets `file_id`, downloads file, converts ogg → WAV (ffmpeg), sends to OpenAI Whisper API.
-4. Transcript is parsed: "важно" → important; chrono-node (Russian) → deadline (Moscow, then UTC).
-5. Task is saved to PostgreSQL.
-6. User sees the task in the React app (polling every 2 s, active list, red highlight, deadline).
+3. Bot gets `file_id`, downloads file, converts ogg → WAV (ffmpeg), sends for OpenRouter transcription.
+4. Transcript/text is passed to therapist NLU for intent/entity parsing.
+5. Backend executes action:
+   - appointment create/suggest/cancel/mark-done, or
+   - settings update (working hours), or
+   - fallback to legacy task creation.
+6. Data is stored in PostgreSQL; frontend displays unified cards in Board/List/Calendar.
+
+### Frontend checklist (browser testing)
+
+- Today agenda: today-only appointments sorted by time with quick actions (Done/Cancel)
+- Board: Kanban columns (Planned, Done, Canceled), drag cards between columns and reorder
+- List: table view, filters, reorder, and explicit status badge
+- Calendar: month/week/day, tasks with deadline and distinct styling for canceled/done
+- Add task: button + hotkey `N`, form (title, notes, due date, priority, column)
+- Voice add: mic button, SpeechRecognition (Chrome/Edge), fallback in Safari/Firefox
+- Search and filters (status, priority, overdue, today, date range)
+- Client filter (All clients + per-client scope)
+- Toast notifications on success/error
