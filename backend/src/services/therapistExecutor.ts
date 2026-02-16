@@ -4,7 +4,7 @@ import {
   PrismaClient,
   TherapistSettings,
 } from "@prisma/client";
-import { addDays, endOfDay, startOfDay } from "date-fns";
+import { addDays, addHours, endOfDay, startOfDay } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import { parseTaskFromTranscript, normalizeClientName } from "./taskParser";
 import { TherapistAction } from "./therapistNlu";
@@ -131,6 +131,10 @@ function formatSlot(startAt: Date, endAt: Date, timezone: string): string {
   return `${start}–${end}`;
 }
 
+function hasExplicitTimeHint(value: string): boolean {
+  return /(\d{1,2}:\d{2}|\d{1,2}\.\d{2}|\d{1,2}\s*час)/i.test(value);
+}
+
 export async function executeTherapistAction(params: {
   prisma: PrismaClient;
   action: TherapistAction;
@@ -237,7 +241,7 @@ export async function executeTherapistAction(params: {
     const settings = (await getSettings(prisma, chatId)) ?? (await ensureSettings(prisma, chatId || "default"));
     const where: {
       status: AppointmentStatus;
-      startAt?: { gte?: Date };
+      startAt?: { gte?: Date; lte?: Date };
       client?: { normalizedName: string };
     } = { status: AppointmentStatus.planned };
 
@@ -253,29 +257,51 @@ export async function executeTherapistAction(params: {
     } else if (action.datetime_hint) {
       const hintDate = parseDateLike(action.datetime_hint);
       if (hintDate) {
-        where.startAt = { gte: startOfDay(hintDate) };
+        where.startAt = hasExplicitTimeHint(action.datetime_hint)
+          ? { gte: addHours(hintDate, -2), lte: addHours(hintDate, 2) }
+          : { gte: startOfDay(hintDate), lte: endOfDay(hintDate) };
+      }
+    } else if (action.date) {
+      const dateOnly = parseDateLike(action.date);
+      if (dateOnly) {
+        where.startAt = { gte: startOfDay(dateOnly), lte: endOfDay(dateOnly) };
       }
     }
 
-    const candidate = await prisma.appointment.findFirst({
+    const candidates = await prisma.appointment.findMany({
       where,
       include: { client: { select: { displayName: true } } },
       orderBy: { startAt: "asc" },
+      take: 8,
     });
 
-    if (!candidate) {
+    if (!candidates.length) {
       return { text: "Сделал: подходящая запись для отмены не найдена." };
     }
 
+    if (candidates.length === 1) {
+      const single = candidates[0];
+      await prisma.appointment.update({
+        where: { id: single.id },
+        data: { status: AppointmentStatus.canceled },
+      });
+      return {
+        text: `Сделал: запись отменена — ${single.client.displayName} ${formatSlot(
+          single.startAt,
+          single.endAt,
+          settings.timezone
+        )}.`,
+      };
+    }
+
     return {
-      text: `Подтвердите отмену: ${candidate.client.displayName} ${formatSlot(
-        candidate.startAt,
-        candidate.endAt,
-        settings.timezone
-      )}`,
+      text: "Сделал: нашел несколько подходящих записей. Выберите, какую отменить:",
       buttons: [
-        { text: "Да, отменить", callbackData: `cancel_yes|${candidate.id}` },
-        { text: "Нет", callbackData: `cancel_no|${candidate.id}` },
+        ...candidates.map((candidate) => ({
+          text: `${formatSlot(candidate.startAt, candidate.endAt, settings.timezone)} — ${candidate.client.displayName}`,
+          callbackData: `cancel_pick|${candidate.id}`,
+        })),
+        { text: "Отмена", callbackData: "cancel_no|0" },
       ],
     };
   }
