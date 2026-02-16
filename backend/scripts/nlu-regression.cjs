@@ -17,7 +17,7 @@ const cases = [
     expected: "set_working_hours",
   },
   {
-    text: "Василиса Островская какие есть свободные слоты завтра",
+    text: "подбери свободные слоты для Василисы на следующей неделе",
     input: {
       intent: "create_appointment",
       client_name: "Василиса Островская",
