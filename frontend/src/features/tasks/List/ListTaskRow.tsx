@@ -65,6 +65,9 @@ export default function ListTaskRow({ task }: ListTaskRowProps) {
           >
             {task.text}
           </span>
+          {task.client?.displayName && (
+            <span className="text-xs text-indigo-500">[{task.client.displayName}]</span>
+          )}
         </label>
       </td>
       <td className="py-3 text-sm text-purple-600">{columnLabel}</td>

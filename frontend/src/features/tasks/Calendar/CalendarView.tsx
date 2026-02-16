@@ -29,9 +29,10 @@ export default function CalendarView() {
     .filter((t) => t.deadline)
     .map((t) => {
       const d = parseISO(t.deadline!);
+      const clientPrefix = t.client?.displayName ? `[${t.client.displayName}] ` : "";
       return {
         id: t.id,
-        title: t.text,
+        title: `${clientPrefix}${t.text}`,
         start: startOfDay(d),
         end: endOfDay(d),
         task: t,

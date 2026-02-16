@@ -70,6 +70,9 @@ export default function TaskCard({ task }: TaskCardProps) {
             >
               {task.text}
             </span>
+            {task.client?.displayName && (
+              <p className="mt-1 text-xs text-indigo-500">{task.client.displayName}</p>
+            )}
             {deadline && (
               <p
                 className={`mt-1 flex items-center gap-1 text-xs ${

@@ -8,12 +8,27 @@ import BoardView from "./features/tasks/Board/BoardView";
 import ListView from "./features/tasks/List/ListView";
 import CalendarView from "./features/tasks/Calendar/CalendarView";
 import Skeleton from "./components/ui/Skeleton";
+import type { ViewMode } from "./store";
 
 const AUTO_REFRESH_MS = 90_000; // 90 sec
+const VIEW_TO_HASH: Record<ViewMode, string> = {
+  board: "#/board",
+  list: "#/list",
+  calendar: "#/calendar",
+};
+
+function hashToViewMode(hash: string): ViewMode {
+  const route = hash.replace(/^#/, "").split("?")[0] || "/";
+  if (route === "/list") return "list";
+  if (route === "/calendar") return "calendar";
+  // /, /board and /tasks fall back to main board view
+  return "board";
+}
 
 function App() {
   const {
     fetchTasks,
+    fetchClients,
     viewMode,
     setViewMode,
     setFilters,
@@ -21,13 +36,30 @@ function App() {
     loading,
     error,
     lastFetched,
+    clients,
+    selectedClientId,
+    setSelectedClientId,
   } = useTasksStore();
   const [addModalOpen, setAddModalOpen] = useState(false);
 
-  // Initial fetch + visibility refetch
+  // Initial clients fetch
   useEffect(() => {
-    fetchTasks();
-  }, [fetchTasks]);
+    fetchClients();
+  }, [fetchClients]);
+
+  useEffect(() => {
+    fetchTasks(selectedClientId);
+  }, [fetchTasks, selectedClientId]);
+
+  useEffect(() => {
+    const syncFromHash = () => {
+      setViewMode(hashToViewMode(window.location.hash));
+    };
+
+    syncFromHash();
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [setViewMode]);
 
   useEffect(() => {
     const onFocus = () => {
@@ -75,6 +107,17 @@ function App() {
     [setFilters]
   );
 
+  const handleViewModeChange = useCallback(
+    (mode: ViewMode) => {
+      const nextHash = VIEW_TO_HASH[mode];
+      if (window.location.hash !== nextHash) {
+        window.location.hash = nextHash;
+      }
+      setViewMode(mode);
+    },
+    [setViewMode]
+  );
+
   if (error) {
     return (
       <div className="min-h-screen p-6 anime-pattern">
@@ -97,11 +140,14 @@ function App() {
       <Toaster position="top-right" richColors />
       <Header
         viewMode={viewMode}
-        onViewModeChange={setViewMode}
+        onViewModeChange={handleViewModeChange}
         onAddTask={() => setAddModalOpen(true)}
         search={filters.search}
         onSearchChange={handleSearchChange}
         onRefresh={fetchTasks}
+        clients={clients}
+        selectedClientId={selectedClientId}
+        onClientChange={setSelectedClientId}
       />
 
       <FiltersBar filters={filters} onFiltersChange={setFilters} />

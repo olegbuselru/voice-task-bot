@@ -1,3 +1,10 @@
+export interface Client {
+  id: string;
+  displayName: string;
+  normalizedName: string;
+  createdAt: string;
+}
+
 /** Raw task from API */
 export interface ApiTask {
   id: string;
@@ -8,6 +15,8 @@ export interface ApiTask {
   status: "active" | "completed";
   createdAt: string;
   completedAt: string | null;
+  clientId?: string | null;
+  client?: Pick<Client, "id" | "displayName" | "normalizedName"> | null;
 }
 
 /** Kanban columns */

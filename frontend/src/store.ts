@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import { isToday, isPast, parseISO } from "date-fns";
-import type { Task, ColumnId } from "./types";
+import type { Task, ColumnId, Client } from "./types";
 import type { ApiTask } from "./api";
 import {
   fetchTasks as apiFetchTasks,
+  fetchClients as apiFetchClients,
+  fetchClientTasks as apiFetchClientTasks,
   createTask as apiCreateTask,
   completeTask as apiCompleteTask,
   reopenTask as apiReopenTask,
@@ -61,6 +63,8 @@ interface TasksState {
   tasks: Task[];
   rawTasks: ApiTask[];
   overrides: OverridesMap;
+  clients: Client[];
+  selectedClientId: string | null;
   loading: boolean;
   error: string | null;
   viewMode: ViewMode;
@@ -68,12 +72,14 @@ interface TasksState {
   lastFetched: number | null;
 
   // Actions
-  fetchTasks: () => Promise<void>;
+  fetchTasks: (clientId?: string | null) => Promise<void>;
+  fetchClients: () => Promise<void>;
   createTask: (payload: CreateTaskPayload) => Promise<Task | null>;
   toggleTask: (id: string) => Promise<void>;
   setColumn: (taskId: string, column: ColumnId) => void;
   setOrder: (taskId: string, column: ColumnId, newOrder: number) => void;
   reorderTasks: (columnId: ColumnId, fromIndex: number, toIndex: number) => void;
+  setSelectedClientId: (clientId: string | null) => void;
 
   setViewMode: (mode: ViewMode) => void;
   setFilters: (f: Partial<Filters>) => void;
@@ -85,22 +91,28 @@ export const useTasksStore = create<TasksState>((set, get) => ({
   tasks: [],
   rawTasks: [],
   overrides: loadOverrides(),
+  clients: [],
+  selectedClientId: null,
   loading: false,
   error: null,
   viewMode: "board",
   filters: DEFAULT_FILTERS,
   lastFetched: null,
 
-  fetchTasks: async () => {
+  fetchTasks: async (clientId) => {
+    const activeClientId = clientId ?? get().selectedClientId;
     set({ loading: true, error: null });
     try {
-      const rawTasks = await apiFetchTasks();
+      const rawTasks = activeClientId
+        ? await apiFetchClientTasks(activeClientId)
+        : await apiFetchTasks();
       const overrides = loadOverrides();
       const tasks = mergeTasks(rawTasks, overrides);
       set({
         rawTasks,
         tasks,
         overrides,
+        selectedClientId: activeClientId,
         loading: false,
         lastFetched: Date.now(),
       });
@@ -112,12 +124,30 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     }
   },
 
+  fetchClients: async () => {
+    try {
+      const clients = await apiFetchClients();
+      set({ clients });
+    } catch {
+      // keep UI functional even if clients endpoint is temporarily unavailable
+    }
+  },
+
   createTask: async (payload) => {
     try {
-      const task = await apiCreateTask(payload);
+      const selectedClientId = get().selectedClientId;
+      const task = await apiCreateTask({
+        ...payload,
+        clientId: payload.clientId ?? selectedClientId ?? undefined,
+      });
       const overrides = loadOverrides();
-      const merged = mergeTasks([...get().rawTasks, task], overrides);
-      set({ rawTasks: [...get().rawTasks, task], tasks: merged });
+      const shouldShowInCurrentView =
+        !selectedClientId || task.clientId === selectedClientId;
+      const nextRawTasks = shouldShowInCurrentView
+        ? [...get().rawTasks, task]
+        : get().rawTasks;
+      const merged = mergeTasks(nextRawTasks, overrides);
+      set({ rawTasks: nextRawTasks, tasks: merged });
       return merged.find((t) => t.id === task.id) ?? null;
     } catch {
       return null;
@@ -213,6 +243,8 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     const nextOverrides = loadOverrides();
     set({ overrides: nextOverrides, tasks: mergeTasks(get().rawTasks, nextOverrides) });
   },
+
+  setSelectedClientId: (clientId) => set({ selectedClientId: clientId }),
 
   setViewMode: (mode) => set({ viewMode: mode }),
   setFilters: (f) => set({ filters: { ...get().filters, ...f } }),

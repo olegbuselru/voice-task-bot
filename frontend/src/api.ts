@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { ApiTask } from "./types";
+import type { ApiTask, Client } from "./types";
 
 const envBaseURL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
 const baseURL = (envBaseURL && envBaseURL.length > 0
@@ -18,11 +18,25 @@ export async function fetchTasks(): Promise<ApiTask[]> {
   return data;
 }
 
+export async function fetchClients(): Promise<Client[]> {
+  const { data } = await api.get<Client[]>("/clients");
+  return data;
+}
+
+export async function fetchClientTasks(clientId: string): Promise<ApiTask[]> {
+  const { data } = await api.get<ApiTask[]>(`/clients/${clientId}/tasks`);
+  return data;
+}
+
 export interface CreateTaskPayload {
-  text: string;
+  text?: string;
+  title?: string;
   originalText?: string;
   important?: boolean;
   deadline?: string | null;
+  dueAt?: string | null;
+  clientId?: string;
+  clientName?: string;
 }
 
 export async function createTask(payload: CreateTaskPayload): Promise<ApiTask> {
