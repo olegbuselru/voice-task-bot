@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
 import axios from "axios";
-import FormData from "form-data";
 import { Telegraf } from "telegraf";
 
 /**
@@ -36,7 +35,7 @@ export async function downloadVoiceFromTelegram(
 
 /**
  * Convert ogg/opus to 16kHz mono WAV via ffmpeg. Returns path to temp WAV file.
- * OpenAI Whisper accepts wav; conversion ensures consistent format.
+ * OpenRouter input_audio accepts base64 WAV; conversion ensures consistent format.
  */
 function convertToWav(oggPath: string): string {
   const wavPath = oggPath.replace(/\.(ogg|opus)$/i, "_conv.wav");
@@ -59,60 +58,122 @@ function convertToWav(oggPath: string): string {
 }
 
 /**
- * Transcribe audio file via OpenAI Whisper API.
- * Expects ogg/opus; converts to WAV and sends to API.
+ * Extract plain text from OpenRouter chat completion message content.
  */
-export async function transcribeWithWhisper(filePath: string): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
-    throw new Error("OPENAI_API_KEY is not set; cannot transcribe voice");
+function extractTranscriptFromContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
   }
 
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return "";
+        }
+        const maybeText = (item as { text?: unknown }).text;
+        return typeof maybeText === "string" ? maybeText : "";
+      })
+      .filter(Boolean);
+    return parts.join(" ").trim();
+  }
+
+  return "";
+}
+
+/**
+ * Transcribe audio file via OpenRouter chat/completions with input_audio(base64).
+ * Expects ogg/opus; converts to WAV before sending.
+ */
+export async function transcribeWithOpenRouter(filePath: string): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey || apiKey.trim().length === 0) {
+    throw new Error("OPENROUTER_API_KEY is not set; cannot transcribe voice");
+  }
+
+  const model = process.env.OPENROUTER_MODEL?.trim() || "openai/gpt-audio-mini";
+  const referer = process.env.OPENROUTER_REFERER?.trim();
+  const title = process.env.OPENROUTER_TITLE?.trim();
+
   let wavPath: string | null = null;
+  const controller = new AbortController();
+  const timeoutMs = 90_000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     if (!fs.existsSync(filePath)) {
       throw new Error("Temp voice file not found");
     }
     wavPath = convertToWav(filePath);
+    const audioBuffer = fs.readFileSync(wavPath);
+    const audioBase64 = audioBuffer.toString("base64");
 
-    const form = new FormData();
-    form.append("file", fs.createReadStream(wavPath), {
-      filename: "audio.wav",
-      contentType: "audio/wav",
-    });
-    form.append("model", "whisper-1");
-    form.append("language", "ru");
-
-    const response = await axios.post<{ text?: string }>(
-      "https://api.openai.com/v1/audio/transcriptions",
-      form,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          ...form.getHeaders(),
+    const payload = {
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Верни только текст распознанной речи. Без пояснений.",
+            },
+            {
+              type: "input_audio",
+              input_audio: {
+                data: audioBase64,
+                format: "wav",
+              },
+            },
+          ],
         },
+      ],
+    };
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (referer) {
+      headers["HTTP-Referer"] = referer;
+    }
+    if (title) {
+      headers["X-Title"] = title;
+    }
+
+    const response = await axios.post<{ choices?: Array<{ message?: { content?: unknown } }> }>(
+      "https://openrouter.ai/api/v1/chat/completions",
+      payload,
+      {
+        headers,
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
-        timeout: 60_000,
+        signal: controller.signal,
       }
     );
 
-    const text = response.data?.text?.trim() ?? "";
+    const content = response.data?.choices?.[0]?.message?.content;
+    const text = extractTranscriptFromContent(content);
     if (!text) {
-      throw new Error("OpenAI Whisper returned empty transcript");
+      throw new Error("OpenRouter returned empty transcript");
     }
     return text;
   } catch (err) {
     if (axios.isAxiosError(err)) {
       const status = err.response?.status;
-      const msg = err.response?.data?.error?.message ?? err.message;
-      throw new Error(`OpenAI API error (${status ?? "network"}): ${msg}`);
+      const body = err.response?.data;
+      const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+      throw new Error(`OpenRouter API error (${status ?? "network"}): ${bodyStr ?? err.message}`);
+    }
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`OpenRouter transcription timeout after ${timeoutMs}ms`);
     }
     if (err instanceof Error) {
-      throw new Error(`Whisper transcription failed: ${err.message}`);
+      throw new Error(`OpenRouter transcription failed: ${err.message}`);
     }
-    throw new Error("Whisper transcription failed");
+    throw new Error("OpenRouter transcription failed");
   } finally {
+    clearTimeout(timeoutId);
     if (wavPath && fs.existsSync(wavPath)) {
       try {
         fs.unlinkSync(wavPath);
@@ -137,7 +198,7 @@ export function deleteTempFile(filePath: string): void {
 }
 
 /**
- * Full pipeline: download voice from Telegram, transcribe with OpenAI Whisper, delete temp file.
+ * Full pipeline: download voice from Telegram, transcribe with OpenRouter, delete temp file.
  */
 export async function processVoiceMessage(
   bot: Telegraf,
@@ -146,9 +207,9 @@ export async function processVoiceMessage(
   let tempPath: string | null = null;
   try {
     tempPath = await downloadVoiceFromTelegram(bot, fileId);
-    const transcript = await transcribeWithWhisper(tempPath);
+    const transcript = await transcribeWithOpenRouter(tempPath);
     if (!transcript || transcript.length === 0) {
-      throw new Error("Empty transcript from Whisper");
+      throw new Error("Empty transcript from OpenRouter");
     }
     return transcript;
   } finally {

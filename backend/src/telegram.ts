@@ -52,8 +52,8 @@ function createBot(): Telegraf {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("Voice message processing error:", msg);
-      if (msg.includes("OPENAI_API_KEY") || msg.includes("OpenAI")) {
-        console.error("Check OPENAI_API_KEY and OpenAI API availability.");
+      if (msg.includes("OPENROUTER_API_KEY") || msg.includes("OpenRouter")) {
+        console.error("Check OPENROUTER_API_KEY and OpenRouter API availability.");
       }
       if (msg.includes("connect") || msg.includes("ECONNREFUSED") || msg.includes("Prisma")) {
         console.error("Check DATABASE_URL and database availability.");
