@@ -1,0 +1,60 @@
+/* Anime-inspired UI styles */
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
+
+:root {
+  --anime-pink: #ff9ecd;
+  --anime-purple: #c4b5fd;
+  --anime-blue: #a5d8ff;
+  --anime-cyan: #99e9f2;
+  --anime-bg: #fdf2f8;
+  --anime-card: rgba(255, 255, 255, 0.85);
+  --anime-shadow: 0 4px 24px rgba(196, 181, 253, 0.25);
+  --anime-glow: 0 0 40px rgba(255, 158, 205, 0.3);
+  --anime-border: rgba(196, 181, 253, 0.4);
+}
+
+body {
+  font-family: 'Nunito', system-ui, -apple-system, sans-serif;
+  background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 25%, #fae8ff 50%, #f5f3ff 75%, #ede9fe 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+.anime-card {
+  background: var(--anime-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--anime-border);
+  box-shadow: var(--anime-shadow);
+  border-radius: 16px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.anime-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--anime-shadow), var(--anime-glow);
+}
+
+.anime-glow-text {
+  text-shadow: 0 0 20px rgba(196, 181, 253, 0.5);
+}
+
+.anime-pattern {
+  background-image: radial-gradient(circle at 20% 80%, rgba(255, 158, 205, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(196, 181, 253, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 40% 40%, rgba(165, 216, 255, 0.1) 0%, transparent 40%);
+}
+
+.sparkle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--anime-pink);
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: sparkle 2s ease-in-out infinite;
+}
+
+@keyframes sparkle {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.2); }
+}
