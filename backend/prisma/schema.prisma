@@ -16,4 +16,16 @@ model Task {
   status       String    @default("active")
   createdAt    DateTime  @default(now())
   completedAt  DateTime?
+  clientId     String?
+  client       Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([clientId])
+}
+
+model Client {
+  id             String   @id @default(uuid())
+  displayName    String
+  normalizedName String   @unique
+  createdAt      DateTime @default(now())
+  tasks          Task[]
 }

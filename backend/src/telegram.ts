@@ -2,7 +2,11 @@ import { Telegraf, Context } from "telegraf";
 import { message } from "telegraf/filters";
 import { PrismaClient } from "@prisma/client";
 import { processVoiceMessage } from "./services/transcription";
-import { parseTaskFromTranscript } from "./services/taskParser";
+import {
+  parseTherapistVoiceTranscript,
+  normalizeClientName,
+  parseTaskFromTranscript,
+} from "./services/taskParser";
 
 const prisma = new PrismaClient();
 
@@ -35,20 +39,43 @@ function createBot(): Telegraf {
         await ctx.reply("Не удалось распознать речь. Попробуйте ещё раз.");
         return;
       }
-      const parsed = parseTaskFromTranscript(transcript);
+      let parsed = parseTherapistVoiceTranscript(transcript);
+      if (!parsed.task.text || parsed.task.text.trim().length === 0) {
+        parsed = { clientDisplayName: null, task: parseTaskFromTranscript(transcript) };
+      }
+
+      let clientId: string | null = null;
+      if (parsed.clientDisplayName) {
+        const normalizedName = normalizeClientName(parsed.clientDisplayName);
+        if (normalizedName.length > 0) {
+          const client = await prisma.client.upsert({
+            where: { normalizedName },
+            update: { displayName: parsed.clientDisplayName },
+            create: {
+              displayName: parsed.clientDisplayName,
+              normalizedName,
+            },
+            select: { id: true },
+          });
+          clientId = client.id;
+        }
+      }
+
       const task = await prisma.task.create({
         data: {
-          text: parsed.text,
-          originalText: parsed.originalText,
-          important: parsed.important,
-          deadline: parsed.deadline,
+          text: parsed.task.text,
+          originalText: parsed.task.originalText,
+          important: parsed.task.important,
+          deadline: parsed.task.deadline,
           status: "active",
+          clientId,
         },
       });
       const deadlineStr = task.deadline
         ? ` до ${task.deadline.toLocaleString("ru-RU", { timeZone: "Europe/Moscow" })}`
         : "";
-      await ctx.reply(`Задача создана${deadlineStr}: ${task.text}`);
+      const clientPrefix = parsed.clientDisplayName ? `[${parsed.clientDisplayName}] ` : "";
+      await ctx.reply(`Задача создана${deadlineStr}: ${clientPrefix}${task.text}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("Voice message processing error:", msg);

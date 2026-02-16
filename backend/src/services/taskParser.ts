@@ -15,6 +15,68 @@ export interface ParsedTask {
   deadline: Date | null;
 }
 
+export interface ParsedTherapistVoice {
+  clientDisplayName: string | null;
+  task: ParsedTask;
+}
+
+const TEMPORAL_PREFIXES = new Set([
+  "сегодня",
+  "завтра",
+  "послезавтра",
+  "в",
+  "к",
+  "на",
+  "до",
+  "понедельник",
+  "вторник",
+  "среда",
+  "четверг",
+  "пятница",
+  "суббота",
+  "воскресенье",
+]);
+
+function isNameToken(token: string): boolean {
+  const clean = token.replace(/[.,:;!?()"']/g, "").trim();
+  if (!clean) return false;
+  if (/\d/.test(clean)) return false;
+  const lower = clean.toLowerCase();
+  if (TEMPORAL_PREFIXES.has(lower)) return false;
+  return /^[A-ZА-ЯЁ][a-zа-яё-]+$/u.test(clean);
+}
+
+function extractLeadingClientName(transcript: string): { clientDisplayName: string | null; remainder: string } {
+  const words = transcript.trim().split(/\s+/).filter(Boolean);
+  const nameParts: string[] = [];
+
+  for (let i = 0; i < words.length; i += 1) {
+    if (!isNameToken(words[i])) {
+      break;
+    }
+    nameParts.push(words[i].replace(/[.,:;!?()"']/g, ""));
+  }
+
+  if (nameParts.length < 2) {
+    return { clientDisplayName: null, remainder: transcript.trim() };
+  }
+
+  const remainder = words.slice(nameParts.length).join(" ").trim();
+  return {
+    clientDisplayName: nameParts.join(" ").trim(),
+    remainder,
+  };
+}
+
+export function normalizeClientName(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9\s-]/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Detect if task is marked as important (Russian "важно").
  */
@@ -91,5 +153,24 @@ export function parseTaskFromTranscript(transcript: string): ParsedTask {
     originalText: trimmed,
     important,
     deadline,
+  };
+}
+
+/**
+ * Parse therapist voice transcript with optional leading client full name.
+ * Fallbacks to regular task parsing when client name cannot be extracted.
+ */
+export function parseTherapistVoiceTranscript(transcript: string): ParsedTherapistVoice {
+  const trimmed = transcript.trim();
+  if (!trimmed) {
+    throw new Error("Transcript cannot be empty");
+  }
+
+  const { clientDisplayName, remainder } = extractLeadingClientName(trimmed);
+  const taskSource = remainder || trimmed;
+
+  return {
+    clientDisplayName,
+    task: parseTaskFromTranscript(taskSource),
   };
 }
