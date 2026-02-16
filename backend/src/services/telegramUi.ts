@@ -157,6 +157,75 @@ async function ensureState(prisma: PrismaClient, chatId: string) {
   });
 }
 
+async function getChatSettings(prisma: PrismaClient, chatId: string): Promise<TherapistSettings | null> {
+  return prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } });
+}
+
+async function buildDaySlotOptions(params: {
+  prisma: PrismaClient;
+  chatId: string;
+  clientId: string;
+  dayIso: string;
+}): Promise<{
+  clientId: string;
+  clientName: string;
+  dayIso: string;
+  timezone: string;
+  slotOptions: Array<{ pendingId: string; label: string }>;
+} | null> {
+  const { prisma, chatId, clientId, dayIso } = params;
+  const [settings, client] = await Promise.all([
+    getChatSettings(prisma, chatId),
+    prisma.client.findUnique({ where: { id: clientId } }),
+  ]);
+  if (!settings || !client) return null;
+
+  const timezone = safeTimezone(settings);
+  const range = rangeForIsoDay(dayIso, timezone);
+  const busy = await prisma.appointment.findMany({
+    where: {
+      status: { not: AppointmentStatus.canceled },
+      startAt: { gte: range.from, lte: range.to },
+    },
+    select: { startAt: true, endAt: true },
+    orderBy: { startAt: "asc" },
+  });
+
+  const slots = computeAvailabilitySlots({
+    from: range.from,
+    to: range.to,
+    settings: asWorkingSettings(settings),
+    appointments: busy,
+    limit: 8,
+  });
+
+  const slotOptions: Array<{ pendingId: string; label: string }> = [];
+  for (const slot of slots) {
+    const pending = await prisma.pendingAction.create({
+      data: {
+        chatId,
+        type: PendingActionType.pick_slot,
+        payloadJson: {
+          clientId: client.id,
+          clientName: client.displayName,
+          startAtIso: slot.startAt.toISOString(),
+          endAtIso: slot.endAt.toISOString(),
+        } as Prisma.InputJsonValue,
+        expiresAt: addDays(new Date(), 1),
+      },
+    });
+    slotOptions.push({ pendingId: pending.id, label: `${hhmm(slot.startAt, timezone)}-${hhmm(slot.endAt, timezone)}` });
+  }
+
+  return {
+    clientId: client.id,
+    clientName: client.displayName,
+    dayIso,
+    timezone,
+    slotOptions,
+  };
+}
+
 async function cleanupPending(prisma: PrismaClient, chatId: string): Promise<void> {
   await prisma.pendingAction.deleteMany({
     where: {
@@ -621,9 +690,154 @@ export async function tryHandleNavigationText(prisma: PrismaClient, ctx: Context
 
 export async function handleWizardTextInput(prisma: PrismaClient, ctx: Context, chatId: string, text: string): Promise<boolean> {
   const state = await prisma.conversationState.findUnique({ where: { chatId } });
-  if (!state || state.screen !== "settings") return false;
+  if (!state) return false;
 
   const payload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
+
+  if (state.screen === "clients") {
+    if (payload.awaitInput === "client_new") {
+      const name = text.trim();
+      if (name.length < 2) {
+        await ctx.reply("Введите имя клиента (минимум 2 символа).");
+        return true;
+      }
+      const normalized = normalizeClientName(name);
+      const created = await prisma.client.upsert({
+        where: { normalizedName: normalized },
+        update: { displayName: name },
+        create: { displayName: name, normalizedName: normalized },
+      });
+      await ctx.reply(`Клиент сохранен: ${created.displayName}`);
+      await renderScreen({ prisma, ctx, chatId, screen: "clients", payload: { page: 1 }, preferredMessageId: state.screenMessageId });
+      return true;
+    }
+
+    if (payload.awaitInput === "client_search") {
+      const query = text.trim();
+      if (query.length < 2) {
+        await ctx.reply("Введите минимум 2 символа для поиска.");
+        return true;
+      }
+      const normalized = normalizeClientName(query);
+      const clients = await prisma.client.findMany({
+        where: {
+          OR: [
+            { displayName: { contains: query, mode: "insensitive" } },
+            { normalizedName: { contains: normalized } },
+          ],
+        },
+        orderBy: { displayName: "asc" },
+        take: 8,
+      });
+      if (!clients.length) {
+        await ctx.reply("Совпадений не найдено.");
+        return true;
+      }
+      await ctx.reply("Результаты поиска:", {
+        reply_markup: {
+          inline_keyboard: [
+            ...clients.map((c) => [{ text: c.displayName, callback_data: `cl:open:${c.id}` }]),
+            [{ text: "🏠 Домой", callback_data: "scr:home" }],
+          ],
+        },
+      });
+      return true;
+    }
+  }
+
+  if (state.screen === "new") {
+    const wizard = payload as NewWizardPayload;
+    const step = wizard.step ?? "client";
+
+    if (step === "client") {
+      const query = text.trim();
+      if (query.length < 2) {
+        await ctx.reply("Введите имя клиента (минимум 2 символа).");
+        return true;
+      }
+      const normalized = normalizeClientName(query);
+      const matches = await prisma.client.findMany({
+        where: {
+          OR: [
+            { displayName: { contains: query, mode: "insensitive" } },
+            { normalizedName: { contains: normalized } },
+          ],
+        },
+        orderBy: { displayName: "asc" },
+        take: 5,
+      });
+
+      if (matches.length === 1) {
+        await renderScreen({
+          prisma,
+          ctx,
+          chatId,
+          screen: "new",
+          payload: { step: "day", clientId: matches[0].id, clientName: matches[0].displayName },
+          preferredMessageId: state.screenMessageId,
+        });
+        return true;
+      }
+
+      if (matches.length > 1) {
+        await ctx.reply("Нашел несколько клиентов, выберите:", {
+          reply_markup: {
+            inline_keyboard: matches.map((c) => [{ text: c.displayName, callback_data: `nw:client:pick:${c.id}` }]),
+          },
+        });
+        return true;
+      }
+
+      const created = await prisma.client.create({
+        data: { displayName: query, normalizedName: normalized },
+      });
+      await renderScreen({
+        prisma,
+        ctx,
+        chatId,
+        screen: "new",
+        payload: { step: "day", clientId: created.id, clientName: created.displayName },
+        preferredMessageId: state.screenMessageId,
+      });
+      return true;
+    }
+
+    if (step === "day") {
+      const settings = await getChatSettings(prisma, chatId);
+      const timezone = settings ? safeTimezone(settings) : "Asia/Bangkok";
+      const dayIso = normalizeDateInput(text, timezone);
+      if (!dayIso) {
+        await ctx.reply("Не понял дату. Используйте “сегодня”, “завтра”, YYYY-MM-DD или dd.mm.");
+        return true;
+      }
+      const clientId = String(wizard.clientId || "");
+      const built = await buildDaySlotOptions({ prisma, chatId, clientId, dayIso });
+      if (!built) {
+        await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" }, preferredMessageId: state.screenMessageId });
+        return true;
+      }
+      await renderScreen({
+        prisma,
+        ctx,
+        chatId,
+        screen: "new",
+        payload: {
+          step: "time",
+          clientId: built.clientId,
+          clientName: built.clientName,
+          dayIso,
+          slotOptions: built.slotOptions,
+        },
+        preferredMessageId: state.screenMessageId,
+      });
+      return true;
+    }
+  }
+
+  if (state.screen !== "settings") {
+    return false;
+  }
+
   if (payload.awaitInput === "time_start") {
     if (!isValidHHMM(text)) {
       await ctx.reply("Не понял время. Введите HH:MM, например 10:30.");
@@ -709,6 +923,35 @@ export async function handleUiCallback(prisma: PrismaClient, ctx: Context, chatI
     return true;
   }
   if (data === "cl:search" || data === "nw:client:search" || data === "cl:new") {
+    if (data === "cl:new") {
+      await upsertState(prisma, chatId, {
+        screen: "clients",
+        step: "new_client",
+        payloadJson: { awaitInput: "client_new" } as Prisma.InputJsonValue,
+        screenMessageId: preferredMessageId,
+      });
+      await ctx.reply("Введите имя нового клиента.");
+      return true;
+    }
+
+    if (data === "nw:client:search") {
+      const currentPayload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
+      await upsertState(prisma, chatId, {
+        screen: "new",
+        step: "client",
+        payloadJson: { ...currentPayload, step: "client", awaitInput: "new_client_search" } as Prisma.InputJsonValue,
+        screenMessageId: preferredMessageId,
+      });
+      await ctx.reply("Введите имя клиента для поиска или создания.");
+      return true;
+    }
+
+    await upsertState(prisma, chatId, {
+      screen: "clients",
+      step: "search",
+      payloadJson: { awaitInput: "client_search" } as Prisma.InputJsonValue,
+      screenMessageId: preferredMessageId,
+    });
     await ctx.reply("Введите имя клиента для поиска.");
     await renderScreen({ prisma, ctx, chatId, screen: "clients", payload: { page: 1 }, preferredMessageId });
     return true;
@@ -738,57 +981,20 @@ export async function handleUiCallback(prisma: PrismaClient, ctx: Context, chatI
 
   if (data === "nw:day:today" || data === "nw:day:tomorrow" || data.startsWith("nw:day:pick:")) {
     const statePayload = ((state.payloadJson as Record<string, unknown> | null) ?? {}) as NewWizardPayload;
-    const dayIso = data === "nw:day:today"
-      ? isoDayInTz(new Date(), safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))
-      : data === "nw:day:tomorrow"
-      ? isoDayInTz(addDays(new Date(), 1), safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))
-      : data.slice("nw:day:pick:".length);
-
-    const settings = await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } });
+    const settings = await getChatSettings(prisma, chatId);
     if (!settings) return true;
     const timezone = safeTimezone(settings);
+    const dayIso = data === "nw:day:today"
+      ? isoDayInTz(new Date(), timezone)
+      : data === "nw:day:tomorrow"
+      ? isoDayInTz(addDays(new Date(), 1), timezone)
+      : data.slice("nw:day:pick:".length);
 
     const clientId = String(statePayload.clientId || "");
-    const client = clientId ? await prisma.client.findUnique({ where: { id: clientId } }) : null;
-    if (!client) {
+    const built = await buildDaySlotOptions({ prisma, chatId, clientId, dayIso });
+    if (!built) {
       await renderScreen({ prisma, ctx, chatId, screen: "new", payload: { step: "client" }, preferredMessageId });
       return true;
-    }
-
-    const range = rangeForIsoDay(dayIso, timezone);
-    const busy = await prisma.appointment.findMany({
-      where: {
-        status: { not: AppointmentStatus.canceled },
-        startAt: { gte: range.from, lte: range.to },
-      },
-      select: { startAt: true, endAt: true },
-      orderBy: { startAt: "asc" },
-    });
-
-    const slots = computeAvailabilitySlots({
-      from: range.from,
-      to: range.to,
-      settings: asWorkingSettings(settings),
-      appointments: busy,
-      limit: 8,
-    });
-
-    const slotOptions: Array<{ pendingId: string; label: string }> = [];
-    for (const slot of slots) {
-      const pending = await prisma.pendingAction.create({
-        data: {
-          chatId,
-          type: PendingActionType.pick_slot,
-          payloadJson: {
-            clientId: client.id,
-            clientName: client.displayName,
-            startAtIso: slot.startAt.toISOString(),
-            endAtIso: slot.endAt.toISOString(),
-          } as Prisma.InputJsonValue,
-          expiresAt: addDays(new Date(), 1),
-        },
-      });
-      slotOptions.push({ pendingId: pending.id, label: `${hhmm(slot.startAt, timezone)}-${hhmm(slot.endAt, timezone)}` });
     }
 
     await renderScreen({
@@ -798,10 +1004,10 @@ export async function handleUiCallback(prisma: PrismaClient, ctx: Context, chatI
       screen: "new",
       payload: {
         step: "time",
-        clientId: client.id,
-        clientName: client.displayName,
+        clientId: built.clientId,
+        clientName: built.clientName,
         dayIso,
-        slotOptions,
+        slotOptions: built.slotOptions,
       },
       preferredMessageId,
     });
@@ -852,11 +1058,13 @@ export async function handleUiCallback(prisma: PrismaClient, ctx: Context, chatI
       include: { client: { select: { displayName: true } } },
     });
     await prisma.pendingAction.delete({ where: { id: pending.id } });
+    const settings = await getChatSettings(prisma, chatId);
+    const timezone = settings ? safeTimezone(settings) : "Asia/Bangkok";
     await ctx.reply(
       [
         "Ок, записал:",
         `${created.client.displayName}`,
-        `${dayTitle(created.startAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))} • ${hhmm(created.startAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))}-${hhmm(created.endAt, safeTimezone(await prisma.therapistSettings.findUnique({ where: { telegramChatId: chatId } }) as TherapistSettings))}`,
+        `${dayTitle(created.startAt, timezone)} • ${hhmm(created.startAt, timezone)}-${hhmm(created.endAt, timezone)}`,
       ].join("\n")
     );
     await renderScreen({
