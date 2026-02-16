@@ -24,6 +24,17 @@ export interface ActionResult {
   buttons?: InlineButton[];
 }
 
+const SLOT_KEYWORDS_RE = /(свободн\w*\s+слот|слоты|окна|когда\s+можно|подбери\s+слот|предложи\s+слот)/i;
+const CREATE_VERBS_RE = /(запиши|запис[ьа]ть|создай\s+запись|поставь\s+запись|назначь\s+встречу)/i;
+
+function looksLikeSuggestSlotsRequest(text: string): boolean {
+  return SLOT_KEYWORDS_RE.test(text);
+}
+
+function hasExplicitCreateVerb(text: string): boolean {
+  return CREATE_VERBS_RE.test(text);
+}
+
 function parseDateLike(value: string | undefined): Date | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -141,7 +152,21 @@ export async function executeTherapistAction(params: {
   originalText: string;
   chatId?: string | null;
 }): Promise<ActionResult> {
-  const { prisma, action, originalText, chatId } = params;
+  const { prisma, originalText, chatId } = params;
+  let action = params.action;
+
+  if (
+    action.intent === "create_appointment" &&
+    looksLikeSuggestSlotsRequest(originalText) &&
+    !hasExplicitCreateVerb(originalText)
+  ) {
+    action = {
+      ...action,
+      intent: "suggest_slots",
+      confidenceOrReason:
+        "executor_guard:create_appointment->suggest_slots(slot_keywords_without_explicit_create_verb)",
+    };
+  }
 
   if (action.intent === "set_working_hours") {
     if (!chatId) {
