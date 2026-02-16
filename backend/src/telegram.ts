@@ -7,7 +7,7 @@ import {
   normalizeClientName,
   parseTaskFromTranscript,
 } from "./services/taskParser";
-import { nluParseCommand } from "./services/therapistNlu";
+import { nluParseCommand, type TherapistAction } from "./services/therapistNlu";
 import { ensureSettings, executeTherapistAction } from "./services/therapistExecutor";
 
 const prisma = new PrismaClient();
@@ -142,6 +142,24 @@ function toInlineKeyboard(buttons: Array<{ text: string; callbackData: string }>
   return { inline_keyboard: rows } as const;
 }
 
+function logNluTrace(text: string, action: TherapistAction | null): void {
+  const payload = {
+    tag: "nlu",
+    text,
+    intent: action?.intent ?? "unknown",
+    extracted: {
+      clientName: action?.client_name,
+      startAt: action?.start_datetime,
+      endAt: action?.to,
+      workStart: action?.start_time,
+      workEnd: action?.end_time,
+      range: action?.range,
+    },
+    confidenceOrReason: action?.confidenceOrReason ?? "no_action",
+  };
+  console.info(JSON.stringify(payload));
+}
+
 function createBot(): Telegraf {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
@@ -196,6 +214,7 @@ function createBot(): Telegraf {
       }
 
       const nluAction = await nluParseCommand(transcript);
+      logNluTrace(transcript, nluAction);
       if (nluAction && nluAction.intent !== "unknown") {
         const result = await executeTherapistAction({
           prisma,
@@ -324,6 +343,7 @@ function createBot(): Telegraf {
       }
 
       const action = await nluParseCommand(text);
+      logNluTrace(text, action);
       if (!action || action.intent === "unknown") {
         return;
       }
