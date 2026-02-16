@@ -18,6 +18,10 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
+app.get("/", (_req, res) => {
+  res.redirect(302, "/health");
+});
+
 app.post("/telegram/webhook", (req, res, next) => {
   const callback = getWebhookCallback();
   Promise.resolve(callback(req, res)).catch(next);
