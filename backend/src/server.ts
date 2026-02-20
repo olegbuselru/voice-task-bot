@@ -6,6 +6,7 @@ import { runCronTick, runDailyDigest } from "./app/cron";
 import { logError, logInfo } from "./app/logger";
 import { prisma } from "./app/prisma";
 import { listTasksDebug } from "./app/taskService";
+import { checkFfmpegAvailability } from "./app/voice";
 
 const app = express();
 app.use(express.json({ limit: "3mb" }));
@@ -63,10 +64,15 @@ app.get("/tasks", async (req, res) => {
 });
 
 app.post("/telegram/webhook", async (req, res) => {
+  let fallbackChatId: string | null = null;
   try {
     const update = req.body as {
       update_id?: number;
-      message?: { chat?: { id?: number | string } };
+      message?: {
+        chat?: { id?: number | string };
+        text?: string;
+        voice?: { file_id?: string; duration?: number; mime_type?: string };
+      };
       callback_query?: { message?: { chat?: { id?: number | string } } };
     };
 
@@ -77,6 +83,18 @@ app.post("/telegram/webhook", async (req, res) => {
 
     const chatIdRaw = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
     const chatId = chatIdRaw != null ? String(chatIdRaw) : "unknown";
+    fallbackChatId = chatId !== "unknown" ? chatId : null;
+    const hasVoice = Boolean(update.message?.voice?.file_id);
+    const messageType = hasVoice ? "voice" : update.message?.text ? "text" : "other";
+    logInfo("telegram_update_received", {
+      updateId: update.update_id,
+      chatId,
+      messageType,
+      voiceFileId: update.message?.voice?.file_id,
+      duration: update.message?.voice?.duration,
+      mime: update.message?.voice?.mime_type,
+    });
+
     const inserted = await markProcessedUpdate(chatId, update.update_id);
     if (!inserted) {
       res.status(200).json({ ok: true, duplicate: true });
@@ -87,6 +105,13 @@ app.post("/telegram/webhook", async (req, res) => {
     res.status(200).json({ ok: true });
   } catch (err) {
     logError("telegram_webhook_failed", err);
+    if (fallbackChatId) {
+      try {
+        await bot.telegram.sendMessage(fallbackChatId, "Не удалось обработать сообщение. Попробуй еще раз или отправь текстом.");
+      } catch (sendErr) {
+        logError("telegram_webhook_fallback_reply_failed", sendErr, { chatId: fallbackChatId });
+      }
+    }
     res.status(200).json({ ok: false });
   }
 });
@@ -114,5 +139,6 @@ app.post("/cron/daily", async (req, res) => {
 });
 
 app.listen(config.port, () => {
+  checkFfmpegAvailability();
   logInfo("server_started", { port: config.port });
 });

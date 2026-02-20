@@ -2,7 +2,8 @@ import { Task } from "@prisma/client";
 import { Context, Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import { AppConfig } from "./config";
-import { logError } from "./logger";
+import { logError, logInfo } from "./logger";
+import { parseTaskSpec } from "./parser";
 import {
   activateTask,
   boxTask,
@@ -21,7 +22,7 @@ import {
   renderTaskLine,
 } from "./taskService";
 import { parseDueDateMsk } from "./time";
-import { transcribeVoiceFromTelegram } from "./voice";
+import { getVoiceUserMessage, transcribeVoiceFromTelegram } from "./voice";
 
 function taskKeyboard(task: Task) {
   if (task.status === "boxed") {
@@ -187,6 +188,17 @@ function getChatId(ctx: Context): string | null {
 }
 
 async function handleTextIntent(ctx: Context, chatId: string, text: string): Promise<void> {
+  const preview = text.trim().slice(0, 80);
+  const spec = parseTaskSpec(text);
+  logInfo("taskspec_preview", {
+    chatId,
+    preview,
+    important: spec.important,
+    category: spec.category,
+    hasDueAt: Boolean(spec.dueAt),
+    remindEveryMinutes: spec.remindEveryMinutes,
+  });
+
   if (await handleShortcutIntent(ctx, chatId, text)) {
     return;
   }
@@ -194,14 +206,6 @@ async function handleTextIntent(ctx: Context, chatId: string, text: string): Pro
   await sendWithHomeKeyboard(ctx, created.reply);
   if (created.task) {
     await ctx.reply("Действия:", { reply_markup: taskKeyboard(created.task) });
-  }
-}
-
-async function safeReply(ctx: Context, text: string): Promise<void> {
-  try {
-    await ctx.reply(text);
-  } catch {
-    // ignore reply failures
   }
 }
 
@@ -253,11 +257,21 @@ export function createBot(config: AppConfig): Telegraf {
   bot.on(message("voice"), async (ctx) => {
     const chatId = getChatId(ctx);
     if (!chatId) return;
+    const msg = ctx.message;
+    if (!msg || !("voice" in msg) || !msg.voice) return;
+
+    logInfo("voice_update_start", {
+      chatId,
+      updateId: "update_id" in msg ? msg.update_id : undefined,
+      messageType: "voice",
+      voiceFileId: msg.voice.file_id,
+      duration: msg.voice.duration,
+      mime: msg.voice.mime_type,
+    });
+
     try {
-      const msg = ctx.message;
-      if (!msg || !("voice" in msg) || !msg.voice) return;
       if (!config.openRouterApiKey) {
-        await sendWithHomeKeyboard(ctx, "Голос временно недоступен: не настроен OPENROUTER_API_KEY. Текст работает.");
+        await sendWithHomeKeyboard(ctx, "Голос сейчас недоступен: не настроен ключ/модель. Отправь текстом.");
         return;
       }
       const text = await transcribeVoiceFromTelegram({
@@ -265,10 +279,20 @@ export function createBot(config: AppConfig): Telegraf {
         fileId: msg.voice.file_id,
         config,
       });
+      logInfo("voice_update_done", {
+        chatId,
+        voiceFileId: msg.voice.file_id,
+        transcriptPreview: text.slice(0, 80),
+      });
       await handleTextIntent(ctx, chatId, text);
     } catch (err) {
-      logError("voice_handler_failed", err, { chatId });
-      await sendWithHomeKeyboard(ctx, "Не удалось обработать голос. Попробуйте текстом.");
+      logError("voice_handler_failed", err, {
+        chatId,
+        voiceFileId: msg.voice.file_id,
+        duration: msg.voice.duration,
+        mime: msg.voice.mime_type,
+      });
+      await sendWithHomeKeyboard(ctx, getVoiceUserMessage(err));
     }
   });
 

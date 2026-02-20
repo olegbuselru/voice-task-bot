@@ -13,7 +13,8 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "prisma:deploy": "prisma migrate deploy && prisma generate",
     "db:push": "prisma db push",
-    "smoke:prod": "bash scripts/prod-verify.sh"
+    "smoke:prod": "bash scripts/prod-verify.sh",
+    "check:voice": "node scripts/voice-self-check.cjs"
   },
   "engines": {
     "node": ">=20.0.0"
