@@ -1,5 +1,24 @@
 # AGENTS
 
+## Update (2026-02-20) — Telegram-only backend rebuild
+
+- Backend was rebuilt for a **Telegram-only task reminder product**.
+- Canonical backend surface now:
+  - `GET /health`
+  - `POST /telegram/webhook`
+  - `POST /cron/tick` (Bearer `CRON_SECRET`)
+  - `POST /cron/daily` (Bearer `CRON_SECRET`)
+  - `GET /tasks?chatId=...` (debug)
+- Canonical timezone is **Europe/Moscow**.
+- Prisma models now centered on:
+  - `Task` (`active|boxed|completed|canceled`, `dueAt`, `remindEveryMinutes`, `nextReminderAt`)
+  - `ProcessedUpdate` for webhook idempotency (`chatId+updateId` unique)
+  - `SentReminder` for reminder dedupe (`taskId+scheduledAt` unique)
+- Reminder delivery is cron-driven (no in-memory scheduler as a single source of truth).
+- Voice transcription remains optional via OpenRouter audio envs; text flow must remain operational without it.
+
+> Note: historical sections below describe the previous therapist-mode architecture and are kept only as archive context.
+
 ## Current architecture
 
 - **Monorepo**: `backend/` + `frontend/`.

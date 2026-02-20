@@ -14,9 +14,25 @@
   - 50-minute session length (configurable)
   - 10-minute mandatory buffer (configurable)
   - 10-minute slot step
-- This prevents LLM hallucinations in availability calculations.
+- This prevents oversized callback payloads and survives process restarts/sleep.
 
 ## 2026-02-16 — Telegram action UX
+
+- `/start` bootstraps `telegramChatId` into `TherapistSettings`.
+- Voice/text commands go through NLU first; if not recognized, voice falls back to legacy task parser.
+- Slot suggestions use inline buttons; cancel uses disambiguation pick-buttons when multiple matches are found.
+
+## 2026-02-20 — Backend rebuilt as Telegram-only reminder scheduler
+
+- Replaced therapist appointment backend with Telegram-only task reminder system.
+- New core models: `Task`, `ProcessedUpdate`, `SentReminder`.
+- Webhook idempotency is enforced by unique `(chatId, updateId)`.
+- Reminder reliability is cron-driven (`/cron/tick`) instead of in-memory timers.
+- Daily digest is cron-driven (`/cron/daily`) at 09:00 Europe/Moscow.
+- Reminder dedupe is enforced by unique `(taskId, scheduledAt)` in `SentReminder`.
+- Voice remains optional via OpenRouter audio; text flow works without audio envs.
+
+## 2026-02-16 — Telegram scheduler UX state persisted in DB
 
 - `/start` bootstraps `telegramChatId` into `TherapistSettings`.
 - Voice/text commands go through NLU first; if not recognized, voice falls back to legacy task parser.
