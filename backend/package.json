@@ -7,11 +7,13 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "test:nlu-regression": "npm run build && node scripts/nlu-regression.cjs",
+    "test": "npm run build",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:push": "prisma db push"
+    "prisma:deploy": "prisma migrate deploy && prisma generate",
+    "db:push": "prisma db push",
+    "smoke:prod": "bash scripts/prod-verify.sh"
   },
   "engines": {
     "node": ">=20.0.0"

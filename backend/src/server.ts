@@ -1,44 +1,118 @@
-import express from "express";
-import cors from "cors";
-import { getWebhookCallback } from "./telegram";
-import tasksRoutes from "./routes/tasks";
-import therapistRoutes from "./routes/therapist";
+import express, { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
+import { createBot } from "./app/bot";
+import { loadConfig } from "./app/config";
+import { runCronTick, runDailyDigest } from "./app/cron";
+import { logError, logInfo } from "./app/logger";
+import { prisma } from "./app/prisma";
+import { listTasksDebug } from "./app/taskService";
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+app.use(express.json({ limit: "3mb" }));
 
-const frontendOrigin = process.env.FRONTEND_ORIGIN;
-const corsOptions = frontendOrigin
-  ? { origin: frontendOrigin.split(",").map((o) => o.trim()).filter(Boolean) }
-  : { origin: true };
-app.use(cors(corsOptions));
-app.use(express.json());
+const config = loadConfig();
+const bot = createBot(config);
 
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok" });
-});
+function unauthorized(res: Response): void {
+  res.status(401).json({ error: "Unauthorized" });
+}
+
+function requireCronAuth(req: Request, res: Response): boolean {
+  const auth = req.header("authorization") || "";
+  const expected = `Bearer ${config.cronSecret}`;
+  if (auth !== expected) {
+    unauthorized(res);
+    return false;
+  }
+  return true;
+}
+
+async function markProcessedUpdate(chatId: string, updateId: number): Promise<boolean> {
+  try {
+    await prisma.processedUpdate.create({
+      data: {
+        chatId,
+        updateId,
+      },
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return false;
+    }
+    throw err;
+  }
+}
 
 app.get("/", (_req, res) => {
-  res.redirect(302, "/health");
+  res.redirect("/health");
 });
 
-app.post("/telegram/webhook", (req, res, next) => {
-  const callback = getWebhookCallback();
-  Promise.resolve(callback(req, res)).catch(next);
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
 });
 
-app.use("/", tasksRoutes);
-app.use("/", therapistRoutes);
-
-app.use((_req, res) => {
-  res.status(404).json({ error: "Not found" });
+app.get("/tasks", async (req, res) => {
+  const chatId = typeof req.query.chatId === "string" ? req.query.chatId : "";
+  if (!chatId) {
+    res.status(400).json({ error: "chatId is required" });
+    return;
+  }
+  const rows = await listTasksDebug(chatId);
+  res.json(rows);
 });
 
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("Unhandled error:", err?.message ?? err);
-  res.status(500).json({ error: "Internal server error" });
+app.post("/telegram/webhook", async (req, res) => {
+  try {
+    const update = req.body as {
+      update_id?: number;
+      message?: { chat?: { id?: number | string } };
+      callback_query?: { message?: { chat?: { id?: number | string } } };
+    };
+
+    if (!update || typeof update.update_id !== "number") {
+      res.status(400).json({ error: "invalid telegram update" });
+      return;
+    }
+
+    const chatIdRaw = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
+    const chatId = chatIdRaw != null ? String(chatIdRaw) : "unknown";
+    const inserted = await markProcessedUpdate(chatId, update.update_id);
+    if (!inserted) {
+      res.status(200).json({ ok: true, duplicate: true });
+      return;
+    }
+
+    await bot.handleUpdate(update as never);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    logError("telegram_webhook_failed", err);
+    res.status(200).json({ ok: false });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend listening on port ${PORT}`);
+app.post("/cron/tick", async (req, res) => {
+  if (!requireCronAuth(req, res)) return;
+  try {
+    const result = await runCronTick(bot);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    logError("cron_tick_failed", err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/cron/daily", async (req, res) => {
+  if (!requireCronAuth(req, res)) return;
+  try {
+    const result = await runDailyDigest(bot);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    logError("cron_daily_failed", err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.listen(config.port, () => {
+  logInfo("server_started", { port: config.port });
 });

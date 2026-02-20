@@ -7,119 +7,53 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Task {
-  id           String    @id @default(uuid())
-  text         String
-  originalText String
-  important    Boolean   @default(false)
-  deadline     DateTime?
-  status       String    @default("active")
-  createdAt    DateTime  @default(now())
-  completedAt  DateTime?
-  clientId     String?
-  client       Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
-
-  @@index([clientId])
-}
-
-model Client {
-  id             String   @id @default(uuid())
-  displayName    String
-  normalizedName String   @unique
-  createdAt      DateTime @default(now())
-  tasks          Task[]
-  appointments   Appointment[]
-}
-
-enum AppointmentStatus {
-  planned
-  done
+enum TaskStatus {
+  active
+  boxed
+  completed
   canceled
 }
 
-enum AppointmentKind {
-  session
-  homework
-  admin
-  other
+model Task {
+  id                 String     @id @default(uuid())
+  chatId             String
+  text               String
+  important          Boolean    @default(false)
+  emoji              String     @default("📝")
+  status             TaskStatus @default(active)
+  dueAt              DateTime?
+  remindEveryMinutes Int?
+  nextReminderAt     DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  completedAt        DateTime?
+  canceledAt         DateTime?
+
+  reminders SentReminder[]
+
+  @@index([chatId, status])
+  @@index([chatId, dueAt])
+  @@index([chatId, nextReminderAt])
 }
 
-model Appointment {
-  id        String            @id @default(uuid())
-  clientId  String
-  client    Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  startAt   DateTime
-  endAt     DateTime
-  status    AppointmentStatus @default(planned)
-  kind      AppointmentKind   @default(session)
-  notes     String?
-  createdAt DateTime          @default(now())
+model ProcessedUpdate {
+  id        String   @id @default(uuid())
+  chatId    String
+  updateId  Int
+  createdAt DateTime @default(now())
 
-  @@index([clientId])
-  @@index([startAt])
-  @@index([status])
+  @@unique([chatId, updateId])
+  @@index([createdAt])
 }
 
-model TherapistSettings {
-  id             String   @id @default(uuid())
-  telegramChatId String   @unique
-  timezone       String   @default("Asia/Bangkok")
-  workDays       String[] @default(["mon", "tue", "wed", "thu", "fri"])
-  workStart      String   @default("10:00")
-  workEnd        String   @default("18:00")
-  sessionMinutes Int      @default(50)
-  bufferMinutes  Int      @default(10)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-}
+model SentReminder {
+  id          String   @id @default(uuid())
+  taskId       String
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  scheduledAt  DateTime
+  telegramMessageId String?
+  createdAt    DateTime @default(now())
 
-enum PendingActionType {
-  pick_slot
-  confirm_cancel
-  reschedule
-  confirm_reschedule
-  confirm_settings_save
-  confirm_create_appointment
-}
-
-model ConversationState {
-  id            String   @id @default(uuid())
-  chatId        String   @unique
-  screen        String
-  step          String
-  payloadJson   Json?
-  screenMessageId String?
-  weekAnchor    DateTime?
-  dayIso        String?
-  updatedAt     DateTime @updatedAt
-  createdAt     DateTime @default(now())
-
-  @@index([screen])
-}
-
-model PendingAction {
-  id          String            @id @default(uuid())
-  chatId      String
-  type        PendingActionType
-  payloadJson Json
-  expiresAt   DateTime
-  createdAt   DateTime          @default(now())
-
-  @@index([chatId])
-  @@index([expiresAt])
-  @@index([type])
-}
-
-model TherapistSettingsDraft {
-  id             String   @id @default(uuid())
-  telegramChatId String   @unique
-  step           String   @default("idle")
-  selectedDays   String[] @default([])
-  startTime      String?
-  endTime        String?
-  timezone       String?
-  sessionMinutes Int?
-  bufferMinutes  Int?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  @@unique([taskId, scheduledAt])
+  @@index([scheduledAt])
 }
