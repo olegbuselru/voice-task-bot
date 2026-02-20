@@ -14,11 +14,18 @@ enum TaskStatus {
   canceled
 }
 
+enum TaskCategory {
+  none
+  work
+  personal
+}
+
 model Task {
   id                 String     @id @default(uuid())
   chatId             String
   text               String
   important          Boolean    @default(false)
+  category           TaskCategory @default(none)
   emoji              String     @default("📝")
   status             TaskStatus @default(active)
   dueAt              DateTime?
