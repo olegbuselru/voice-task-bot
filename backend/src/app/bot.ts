@@ -5,17 +5,22 @@ import { AppConfig } from "./config";
 import { logError } from "./logger";
 import {
   activateTask,
-  allStatusTitles,
   boxTask,
   cancelTask,
+  countBoxedTasks,
   createTaskFromText,
+  isBoxListRequest,
+  isDoneListRequest,
   isAllListRequest,
   isTodayListRequest,
-  listAllTasks,
+  listActiveTasks,
+  listBoxedTasks,
+  listRecentCompleted,
   listTodayTasks,
   markDone,
   renderTaskLine,
 } from "./taskService";
+import { parseDueDateMsk } from "./time";
 import { transcribeVoiceFromTelegram } from "./voice";
 
 function taskKeyboard(task: Task) {
@@ -37,35 +42,142 @@ function taskKeyboard(task: Task) {
   };
 }
 
+function homeKeyboard() {
+  return {
+    keyboard: [[
+      { text: "Коробка" },
+      { text: "Что сегодня" },
+      { text: "Все задачи" },
+    ]],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+  };
+}
+
+async function sendWithHomeKeyboard(ctx: Context, text: string): Promise<void> {
+  await ctx.reply(text, { reply_markup: homeKeyboard() });
+}
+
+function normalizeIntentText(text: string): string {
+  return text.toLowerCase().replace(/[.,!?;:()"'`]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function hasDateTimeHint(text: string): boolean {
+  return parseDueDateMsk(text) !== null;
+}
+
 async function sendAllList(ctx: Context, chatId: string): Promise<void> {
-  const grouped = await listAllTasks(chatId);
-  await ctx.reply("Весь список задач");
-  for (const [status, title] of allStatusTitles()) {
-    const items = grouped[status];
-    if (!items.length) continue;
-    await ctx.reply(`${title} (${items.length})`);
-    for (const task of items.slice(0, 30)) {
-      await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
-    }
+  const [active, boxedCount] = await Promise.all([listActiveTasks(chatId), countBoxedTasks(chatId)]);
+  await sendWithHomeKeyboard(ctx, "Все задачи");
+  if (!active.length) {
+    await sendWithHomeKeyboard(ctx, "Активных задач нет.");
+    return;
+  }
+  for (const task of active.slice(0, 30)) {
+    await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
+  }
+  if (boxedCount > 0) {
+    await sendWithHomeKeyboard(ctx, `В коробке: ${boxedCount}`);
   }
 }
 
 async function sendTodayList(ctx: Context, chatId: string): Promise<void> {
   const today = await listTodayTasks(chatId);
-  await ctx.reply("Задачи на сегодня");
-  if (today.active.length === 0 && today.boxed.length === 0) {
-    await ctx.reply("На сегодня задач нет.");
+  await sendWithHomeKeyboard(ctx, "Что сегодня");
+  if (today.active.length === 0) {
+    await sendWithHomeKeyboard(ctx, "На сегодня задач нет.");
     return;
   }
   for (const task of today.active) {
     await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
   }
-  if (today.boxed.length > 0) {
-    await ctx.reply("В коробке:");
-    for (const task of today.boxed) {
-      await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
-    }
+}
+
+async function sendBoxedList(ctx: Context, chatId: string): Promise<void> {
+  const boxed = await listBoxedTasks(chatId);
+  await sendWithHomeKeyboard(ctx, "Коробка");
+  if (!boxed.length) {
+    await sendWithHomeKeyboard(ctx, "Коробка пуста.");
+    return;
   }
+  for (const task of boxed.slice(0, 30)) {
+    await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
+  }
+}
+
+async function sendDoneList(ctx: Context, chatId: string): Promise<void> {
+  const done = await listRecentCompleted(chatId, 15);
+  await sendWithHomeKeyboard(ctx, "Сделано");
+  if (!done.length) {
+    await sendWithHomeKeyboard(ctx, "Выполненных задач пока нет.");
+    return;
+  }
+  const lines = done.map((task) => renderTaskLine(task));
+  await sendWithHomeKeyboard(ctx, lines.join("\n"));
+}
+
+async function sendActionResult(ctx: Context, text: string): Promise<void> {
+  await sendWithHomeKeyboard(ctx, text);
+}
+
+async function sendHomeHelp(ctx: Context): Promise<void> {
+  await sendWithHomeKeyboard(
+    ctx,
+    [
+      "Привет! Я Telegram Scheduler.",
+      "Пример: Сделать отчет завтра 10:00, напоминай каждые 3 часа",
+    ].join("\n")
+  );
+}
+
+function shouldRouteToShortcut(text: string): boolean {
+  return !hasDateTimeHint(text);
+}
+
+function normalizeForShortcuts(text: string): string {
+  return normalizeIntentText(text);
+}
+
+function isAllShortcut(text: string): boolean {
+  const v = normalizeForShortcuts(text);
+  return isAllListRequest(v) || v === "все задачи" || v === "все";
+}
+
+function isTodayShortcut(text: string): boolean {
+  const v = normalizeForShortcuts(text);
+  return isTodayListRequest(v) || v === "что сегодня" || v === "сегодня";
+}
+
+function isBoxShortcut(text: string): boolean {
+  const v = normalizeForShortcuts(text);
+  return isBoxListRequest(v) || v === "коробка" || v === "инбокс";
+}
+
+function isDoneShortcut(text: string): boolean {
+  const v = normalizeForShortcuts(text);
+  return isDoneListRequest(v) || v === "сделано";
+}
+
+async function handleShortcutIntent(ctx: Context, chatId: string, text: string): Promise<boolean> {
+  if (!shouldRouteToShortcut(text)) return false;
+
+  if (isAllShortcut(text)) {
+    await sendAllList(ctx, chatId);
+    return true;
+  }
+  if (isTodayShortcut(text)) {
+    await sendTodayList(ctx, chatId);
+    return true;
+  }
+  if (isBoxShortcut(text)) {
+    await sendBoxedList(ctx, chatId);
+    return true;
+  }
+  if (isDoneShortcut(text)) {
+    await sendDoneList(ctx, chatId);
+    return true;
+  }
+  return false;
 }
 
 function getChatId(ctx: Context): string | null {
@@ -75,16 +187,11 @@ function getChatId(ctx: Context): string | null {
 }
 
 async function handleTextIntent(ctx: Context, chatId: string, text: string): Promise<void> {
-  if (isAllListRequest(text)) {
-    await sendAllList(ctx, chatId);
-    return;
-  }
-  if (isTodayListRequest(text)) {
-    await sendTodayList(ctx, chatId);
+  if (await handleShortcutIntent(ctx, chatId, text)) {
     return;
   }
   const created = await createTaskFromText(chatId, text);
-  await ctx.reply(created.reply);
+  await sendWithHomeKeyboard(ctx, created.reply);
   if (created.task) {
     await ctx.reply("Действия:", { reply_markup: taskKeyboard(created.task) });
   }
@@ -102,20 +209,7 @@ export function createBot(config: AppConfig): Telegraf {
   const bot = new Telegraf(config.telegramBotToken);
 
   bot.command("start", async (ctx) => {
-    await ctx.reply(
-      [
-        "Привет! Я Telegram Scheduler.",
-        "Пример: Сделать отчет завтра 10:00, напоминай каждые 3 часа",
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "📋 Сегодня", callback_data: "today:list" },
-            { text: "🗂 Все задачи", callback_data: "all:list" },
-          ]],
-        },
-      }
-    );
+    await sendHomeHelp(ctx);
   });
 
   bot.command("today", async (ctx) => {
@@ -130,12 +224,27 @@ export function createBot(config: AppConfig): Telegraf {
     await sendAllList(ctx, chatId);
   });
 
+  bot.command("box", async (ctx) => {
+    const chatId = getChatId(ctx);
+    if (!chatId) return;
+    await sendBoxedList(ctx, chatId);
+  });
+
+  bot.command("done", async (ctx) => {
+    const chatId = getChatId(ctx);
+    if (!chatId) return;
+    await sendDoneList(ctx, chatId);
+  });
+
   bot.command("help", async (ctx) => {
-    await ctx.reply(
+    await sendWithHomeKeyboard(
+      ctx,
       [
         "Команды:",
         "/today — задачи на сегодня",
         "/all — все задачи",
+        "/box — коробка",
+        "/done — сделано",
         "Пример: Сделать отчет завтра 10:00, напоминай каждые 3 часа",
       ].join("\n")
     );
@@ -148,7 +257,7 @@ export function createBot(config: AppConfig): Telegraf {
       const msg = ctx.message;
       if (!msg || !("voice" in msg) || !msg.voice) return;
       if (!config.openRouterApiKey) {
-        await ctx.reply("Голос временно недоступен: не настроен OPENROUTER_API_KEY. Текст работает.");
+        await sendWithHomeKeyboard(ctx, "Голос временно недоступен: не настроен OPENROUTER_API_KEY. Текст работает.");
         return;
       }
       const text = await transcribeVoiceFromTelegram({
@@ -159,7 +268,7 @@ export function createBot(config: AppConfig): Telegraf {
       await handleTextIntent(ctx, chatId, text);
     } catch (err) {
       logError("voice_handler_failed", err, { chatId });
-      await safeReply(ctx, "Не удалось обработать голос. Попробуйте текстом.");
+      await sendWithHomeKeyboard(ctx, "Не удалось обработать голос. Попробуйте текстом.");
     }
   });
 
@@ -172,7 +281,7 @@ export function createBot(config: AppConfig): Telegraf {
       await handleTextIntent(ctx, chatId, text);
     } catch (err) {
       logError("text_handler_failed", err, { chatId, text });
-      await safeReply(ctx, "Ошибка обработки команды. Попробуйте позже.");
+      await sendWithHomeKeyboard(ctx, "Ошибка обработки команды. Попробуйте позже.");
     }
   });
 
@@ -191,27 +300,31 @@ export function createBot(config: AppConfig): Telegraf {
         await sendAllList(ctx, chatId);
         return;
       }
+      if (data === "box:list") {
+        await sendBoxedList(ctx, chatId);
+        return;
+      }
 
       const [action, taskId] = data.split(":");
       if (!taskId) return;
       if (action === "done") {
-        await safeReply(ctx, await markDone(chatId, taskId));
+        await sendActionResult(ctx, await markDone(chatId, taskId));
         return;
       }
       if (action === "cancel") {
-        await safeReply(ctx, await cancelTask(chatId, taskId));
+        await sendActionResult(ctx, await cancelTask(chatId, taskId));
         return;
       }
       if (action === "box") {
-        await safeReply(ctx, await boxTask(chatId, taskId));
+        await sendActionResult(ctx, await boxTask(chatId, taskId));
         return;
       }
       if (action === "activate") {
-        await safeReply(ctx, await activateTask(chatId, taskId));
+        await sendActionResult(ctx, await activateTask(chatId, taskId));
       }
     } catch (err) {
       logError("callback_failed", err, { chatId, data });
-      await safeReply(ctx, "Не удалось обработать действие.");
+      await sendWithHomeKeyboard(ctx, "Не удалось обработать действие.");
     }
   });
 
