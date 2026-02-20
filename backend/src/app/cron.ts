@@ -2,6 +2,7 @@ import { Task } from "@prisma/client";
 import type { Telegraf } from "telegraf";
 import {
   advanceNextReminder,
+  cleanupCompletedOverflow,
   fetchDueReminderBatch,
   formatReminderText,
   formatTodayDigest,
@@ -22,6 +23,7 @@ function reminderKeyboard(taskId: string) {
 }
 
 export async function runCronTick(bot: Telegraf): Promise<{ processed: number }> {
+  await cleanupCompletedOverflow(15);
   const tasks = await fetchDueReminderBatch(100);
   let processed = 0;
 

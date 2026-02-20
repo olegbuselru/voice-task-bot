@@ -1,4 +1,4 @@
-import { Prisma, Task, TaskStatus } from "@prisma/client";
+import { Prisma, Task, TaskCategory, TaskStatus } from "@prisma/client";
 import { addMinutes } from "date-fns";
 import { parseTaskSpec } from "./parser";
 import { prisma } from "./prisma";
@@ -7,14 +7,12 @@ import { formatMskDateTime, formatMskTime, rangeUtcForDayKey, todayRangeUtc } fr
 export interface RenderTask {
   id: string;
   line: string;
-  status: TaskStatus;
 }
 
-const STATUS_TITLE: Record<TaskStatus, string> = {
-  active: "Активные",
-  boxed: "В коробке",
-  completed: "Выполненные",
-  canceled: "Отмененные",
+const CATEGORY_PREFIX: Record<TaskCategory, string> = {
+  none: "",
+  work: "💼 ",
+  personal: "👤 ",
 };
 
 function importancePrefix(important: boolean): string {
@@ -23,10 +21,12 @@ function importancePrefix(important: boolean): string {
 
 export function renderTaskLine(task: Task): string {
   const important = importancePrefix(task.important);
+  const category = CATEGORY_PREFIX[task.category] ?? "";
+  const content = `${category}${important}${task.text}`;
   if (task.dueAt) {
-    return `• ${formatMskTime(task.dueAt)} ${important}${task.text}`;
+    return `• ${formatMskTime(task.dueAt)} ${content}`;
   }
-  return `• ${important}${task.text}`;
+  return `• ${content}`;
 }
 
 export async function createTaskFromText(chatId: string, text: string): Promise<{ reply: string; task?: Task }> {
@@ -35,12 +35,13 @@ export async function createTaskFromText(chatId: string, text: string): Promise<
     return { reply: "Укажите дату и время для напоминаний, например: \"завтра 10:00\"." };
   }
 
-  const status: TaskStatus = spec.dueAt ? "active" : "boxed";
+  const status = spec.dueAt ? "active" : "boxed";
   const task = await prisma.task.create({
     data: {
       chatId,
       text: spec.text,
       important: spec.important,
+      category: spec.category,
       emoji: "",
       status,
       dueAt: spec.dueAt,
@@ -78,14 +79,40 @@ export async function listTodayTasks(chatId: string): Promise<{ active: Task[]; 
     where: {
       chatId,
       dueAt: { gte: range.from, lte: range.to },
-      status: { in: ["active", "boxed"] },
+      status: "active",
     },
-    orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+    orderBy: [{ dueAt: "asc" }],
   });
   return {
-    active: tasks.filter((t) => t.status === "active"),
-    boxed: tasks.filter((t) => t.status === "boxed"),
+    active: tasks,
+    boxed: [],
   };
+}
+
+export async function listActiveTasks(chatId: string): Promise<Task[]> {
+  return prisma.task.findMany({
+    where: { chatId, status: "active" },
+    orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+  });
+}
+
+export async function listBoxedTasks(chatId: string): Promise<Task[]> {
+  return prisma.task.findMany({
+    where: { chatId, status: "boxed" },
+    orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+  });
+}
+
+export async function countBoxedTasks(chatId: string): Promise<number> {
+  return prisma.task.count({ where: { chatId, status: "boxed" } });
+}
+
+export async function listRecentCompleted(chatId: string, limit = 15): Promise<Task[]> {
+  return prisma.task.findMany({
+    where: { chatId, status: "completed" },
+    orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+    take: limit,
+  });
 }
 
 export async function findTaskForChat(chatId: string, taskId: string): Promise<Task | null> {
@@ -109,10 +136,7 @@ export async function cancelTask(chatId: string, taskId: string): Promise<string
   if (!task) return "Задача не найдена.";
   if (task.status === "canceled") return "Уже отменено.";
   if (task.status === "completed") return "Уже выполнено.";
-  await prisma.task.update({
-    where: { id: task.id },
-    data: { status: "canceled", canceledAt: new Date(), nextReminderAt: null },
-  });
+  await prisma.task.update({ where: { id: task.id }, data: { status: "canceled", canceledAt: new Date(), nextReminderAt: null } });
   return "Задача отменена.";
 }
 
@@ -145,10 +169,6 @@ export async function activateTask(chatId: string, taskId: string): Promise<stri
     },
   });
   return "Активировал задачу.";
-}
-
-export function allStatusTitles(): Array<[TaskStatus, string]> {
-  return (["active", "boxed", "completed", "canceled"] as TaskStatus[]).map((status) => [status, STATUS_TITLE[status]]);
 }
 
 export async function fetchDueReminderBatch(limit = 50): Promise<Task[]> {
@@ -205,6 +225,26 @@ export async function listTodayActiveForDigest(chatId: string): Promise<{ active
   return { active, boxedCount };
 }
 
+export async function cleanupCompletedOverflow(limit = 15): Promise<void> {
+  const chats = await prisma.task.findMany({
+    where: { status: "completed" },
+    distinct: ["chatId"],
+    select: { chatId: true },
+  });
+
+  for (const row of chats) {
+    const overflow = await prisma.task.findMany({
+      where: { chatId: row.chatId, status: "completed" },
+      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+      skip: limit,
+      select: { id: true },
+    });
+    if (overflow.length > 0) {
+      await prisma.task.deleteMany({ where: { id: { in: overflow.map((x) => x.id) } } });
+    }
+  }
+}
+
 export async function listChatsWithTasks(): Promise<string[]> {
   const rows = await prisma.task.findMany({
     distinct: ["chatId"],
@@ -214,13 +254,19 @@ export async function listChatsWithTasks(): Promise<string[]> {
 }
 
 export function isAllListRequest(text: string): boolean {
-  const v = text.toLowerCase();
-  return /(все задачи|весь список|список задач)/i.test(v);
+  return /(задачи|все задачи|весь список|список задач|что у меня|что есть)/i.test(text);
 }
 
 export function isTodayListRequest(text: string): boolean {
-  const v = text.toLowerCase();
-  return /(список задач на сегодня|задачи сегодня|на сегодня)/i.test(v) && !/(сегодня\s+\d{1,2}:\d{2})/i.test(v);
+  return /(дела|что сегодня|сегодня|на сегодня|список задач на сегодня|задачи сегодня)/i.test(text) && !/(сегодня\s+\d{1,2}:\d{2})/i.test(text);
+}
+
+export function isBoxListRequest(text: string): boolean {
+  return /(коробка|инбокс)/i.test(text);
+}
+
+export function isDoneListRequest(text: string): boolean {
+  return /(сделано)/i.test(text);
 }
 
 export function formatReminderText(task: Task): string {
