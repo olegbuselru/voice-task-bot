@@ -1,6 +1,5 @@
 import { Prisma, Task, TaskStatus } from "@prisma/client";
 import { addMinutes } from "date-fns";
-import { pickEmoji } from "./emoji";
 import { parseTaskSpec } from "./parser";
 import { prisma } from "./prisma";
 import { formatMskDateTime, formatMskTime, rangeUtcForDayKey, todayRangeUtc } from "./time";
@@ -12,26 +11,22 @@ export interface RenderTask {
 }
 
 const STATUS_TITLE: Record<TaskStatus, string> = {
-  active: "🟢 Активные",
-  boxed: "📥 В коробке",
-  completed: "✅ Выполненные",
-  canceled: "❌ Отмененные",
+  active: "Активные",
+  boxed: "В коробке",
+  completed: "Выполненные",
+  canceled: "Отмененные",
 };
 
 function importancePrefix(important: boolean): string {
-  return important ? "🔥 " : "";
-}
-
-function statusEmoji(status: TaskStatus): string {
-  if (status === "completed") return "✅";
-  if (status === "canceled") return "❌";
-  if (status === "boxed") return "📥";
-  return "🟢";
+  return important ? "!" : "";
 }
 
 export function renderTaskLine(task: Task): string {
-  const due = task.dueAt ? ` (${formatMskDateTime(task.dueAt)})` : "";
-  return `${statusEmoji(task.status)} ${importancePrefix(task.important)}${task.emoji} ${task.text}${due}`;
+  const important = importancePrefix(task.important);
+  if (task.dueAt) {
+    return `• ${formatMskTime(task.dueAt)} ${important}${task.text}`;
+  }
+  return `• ${important}${task.text}`;
 }
 
 export async function createTaskFromText(chatId: string, text: string): Promise<{ reply: string; task?: Task }> {
@@ -46,7 +41,7 @@ export async function createTaskFromText(chatId: string, text: string): Promise<
       chatId,
       text: spec.text,
       important: spec.important,
-      emoji: pickEmoji(spec.text),
+      emoji: "",
       status,
       dueAt: spec.dueAt,
       remindEveryMinutes: spec.remindEveryMinutes,
@@ -59,7 +54,7 @@ export async function createTaskFromText(chatId: string, text: string): Promise<
     reply: [
       "Задача создана:",
       renderTaskLine(task),
-      task.remindEveryMinutes ? `⏰ Напоминать каждые ${task.remindEveryMinutes} мин.` : "",
+      task.remindEveryMinutes ? `Напоминать каждые ${task.remindEveryMinutes} мин.` : "",
     ].filter(Boolean).join("\n"),
   };
 }
@@ -100,46 +95,46 @@ export async function findTaskForChat(chatId: string, taskId: string): Promise<T
 export async function markDone(chatId: string, taskId: string): Promise<string> {
   const task = await findTaskForChat(chatId, taskId);
   if (!task) return "Задача не найдена.";
-  if (task.status === "completed") return "Уже выполнено ✅";
-  if (task.status === "canceled") return "Уже отменено ❌";
+  if (task.status === "completed") return "Уже выполнено.";
+  if (task.status === "canceled") return "Уже отменено.";
   await prisma.task.update({
     where: { id: task.id },
     data: { status: "completed", completedAt: new Date(), nextReminderAt: null },
   });
-  return "Готово, отметил как выполнено ✅";
+  return "Готово, отмечено как выполнено.";
 }
 
 export async function cancelTask(chatId: string, taskId: string): Promise<string> {
   const task = await findTaskForChat(chatId, taskId);
   if (!task) return "Задача не найдена.";
-  if (task.status === "canceled") return "Уже отменено ❌";
-  if (task.status === "completed") return "Уже выполнено ✅";
+  if (task.status === "canceled") return "Уже отменено.";
+  if (task.status === "completed") return "Уже выполнено.";
   await prisma.task.update({
     where: { id: task.id },
     data: { status: "canceled", canceledAt: new Date(), nextReminderAt: null },
   });
-  return "Отменил задачу ❌";
+  return "Задача отменена.";
 }
 
 export async function boxTask(chatId: string, taskId: string): Promise<string> {
   const task = await findTaskForChat(chatId, taskId);
   if (!task) return "Задача не найдена.";
-  if (task.status === "boxed") return "Уже в коробке 📥";
-  if (task.status === "completed") return "Уже выполнено ✅";
-  if (task.status === "canceled") return "Уже отменено ❌";
+  if (task.status === "boxed") return "Уже в коробке.";
+  if (task.status === "completed") return "Уже выполнено.";
+  if (task.status === "canceled") return "Уже отменено.";
   await prisma.task.update({
     where: { id: task.id },
     data: { status: "boxed", nextReminderAt: null },
   });
-  return "Переместил в коробку 📥";
+  return "Переместил в коробку.";
 }
 
 export async function activateTask(chatId: string, taskId: string): Promise<string> {
   const task = await findTaskForChat(chatId, taskId);
   if (!task) return "Задача не найдена.";
-  if (task.status === "active") return "Уже активна 🟢";
-  if (task.status === "completed") return "Уже выполнено ✅";
-  if (task.status === "canceled") return "Уже отменено ❌";
+  if (task.status === "active") return "Уже активна.";
+  if (task.status === "completed") return "Уже выполнено.";
+  if (task.status === "canceled") return "Уже отменено.";
   if (!task.dueAt) return "Нужны дата/время для активации. Укажите новую задачу с дедлайном.";
 
   await prisma.task.update({
@@ -149,7 +144,7 @@ export async function activateTask(chatId: string, taskId: string): Promise<stri
       nextReminderAt: task.remindEveryMinutes ? task.dueAt : null,
     },
   });
-  return "Активировал задачу ▶️";
+  return "Активировал задачу.";
 }
 
 export function allStatusTitles(): Array<[TaskStatus, string]> {
@@ -231,15 +226,18 @@ export function isTodayListRequest(text: string): boolean {
 export function formatReminderText(task: Task): string {
   const dueLabel = task.dueAt ? formatMskDateTime(task.dueAt) : "без времени";
   const every = task.remindEveryMinutes ? `каждые ${task.remindEveryMinutes} мин` : "без повтора";
-  return `${importancePrefix(task.important)}${task.emoji} ${task.text}\n⏰ ${dueLabel} • ${every}`;
+  const title = task.dueAt
+    ? `• ${formatMskTime(task.dueAt)} ${importancePrefix(task.important)}${task.text}`
+    : `• ${importancePrefix(task.important)}${task.text}`;
+  return `${title}\n${dueLabel} • ${every}`;
 }
 
 export function formatTodayDigest(active: Task[], boxedCount: number): string {
   const lines = active.length
-    ? active.map((task, idx) => `${idx + 1}) ${importancePrefix(task.important)}${task.emoji} ${task.text} — ${task.dueAt ? formatMskTime(task.dueAt) : "--:--"}`)
+    ? active.map((task) => renderTaskLine(task))
     : ["Сегодня активных задач нет."];
-  const boxedInfo = boxedCount > 0 ? `\n📥 В коробке: ${boxedCount}` : "";
-  return `📋 Сводка на сегодня\n\n${lines.join("\n")}${boxedInfo}`;
+  const boxedInfo = boxedCount > 0 ? `\nВ коробке: ${boxedCount}` : "";
+  return `Сводка на сегодня\n\n${lines.join("\n")}${boxedInfo}`;
 }
 
 export async function listTasksDebug(chatId: string): Promise<Task[]> {

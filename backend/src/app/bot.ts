@@ -39,7 +39,7 @@ function taskKeyboard(task: Task) {
 
 async function sendAllList(ctx: Context, chatId: string): Promise<void> {
   const grouped = await listAllTasks(chatId);
-  await ctx.reply("🗂 Весь список задач");
+  await ctx.reply("Весь список задач");
   for (const [status, title] of allStatusTitles()) {
     const items = grouped[status];
     if (!items.length) continue;
@@ -52,7 +52,7 @@ async function sendAllList(ctx: Context, chatId: string): Promise<void> {
 
 async function sendTodayList(ctx: Context, chatId: string): Promise<void> {
   const today = await listTodayTasks(chatId);
-  await ctx.reply("📋 Задачи на сегодня");
+  await ctx.reply("Задачи на сегодня");
   if (today.active.length === 0 && today.boxed.length === 0) {
     await ctx.reply("На сегодня задач нет.");
     return;
@@ -61,7 +61,7 @@ async function sendTodayList(ctx: Context, chatId: string): Promise<void> {
     await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
   }
   if (today.boxed.length > 0) {
-    await ctx.reply("📥 В коробке:");
+    await ctx.reply("В коробке:");
     for (const task of today.boxed) {
       await ctx.reply(renderTaskLine(task), { reply_markup: taskKeyboard(task) });
     }

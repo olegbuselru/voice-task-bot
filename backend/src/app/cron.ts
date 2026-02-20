@@ -29,7 +29,7 @@ export async function runCronTick(bot: Telegraf): Promise<{ processed: number }>
     if (!task.nextReminderAt) continue;
     const unique = await tryCreateSentReminder(task.id, task.nextReminderAt);
     if (!unique) continue;
-    await bot.telegram.sendMessage(task.chatId, `🔔 Напоминание\n${formatReminderText(task)}`, {
+    await bot.telegram.sendMessage(task.chatId, `Напоминание\n${formatReminderText(task)}`, {
       reply_markup: reminderKeyboard(task.id),
     });
     await advanceNextReminder(task as Task);
