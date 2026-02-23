@@ -7,60 +7,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum TaskStatus {
-  active
-  boxed
-  completed
+enum ReminderStatus {
+  scheduled
+  sent
   canceled
 }
 
-enum TaskCategory {
-  none
-  work
-  personal
-}
+model Reminder {
+  id        String         @id @default(cuid())
+  chatId    String
+  text      String
+  remindAt  DateTime
+  status    ReminderStatus @default(scheduled)
+  createdAt DateTime       @default(now())
+  sentAt    DateTime?
 
-model Task {
-  id                 String     @id @default(uuid())
-  chatId             String
-  text               String
-  important          Boolean    @default(false)
-  category           TaskCategory @default(none)
-  emoji              String     @default("📝")
-  status             TaskStatus @default(active)
-  dueAt              DateTime?
-  remindEveryMinutes Int?
-  nextReminderAt     DateTime?
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
-  completedAt        DateTime?
-  canceledAt         DateTime?
-
-  reminders SentReminder[]
-
+  @@index([status, remindAt])
   @@index([chatId, status])
-  @@index([chatId, dueAt])
-  @@index([chatId, nextReminderAt])
 }
 
 model ProcessedUpdate {
-  id        String   @id @default(uuid())
-  chatId    String
-  updateId  Int
+  id        Int      @id
   createdAt DateTime @default(now())
-
-  @@unique([chatId, updateId])
   @@index([createdAt])
-}
-
-model SentReminder {
-  id          String   @id @default(uuid())
-  taskId       String
-  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  scheduledAt  DateTime
-  telegramMessageId String?
-  createdAt    DateTime @default(now())
-
-  @@unique([taskId, scheduledAt])
-  @@index([scheduledAt])
 }

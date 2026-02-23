@@ -1,144 +1,168 @@
 import express, { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
-import { createBot } from "./app/bot";
-import { loadConfig } from "./app/config";
-import { runCronTick, runDailyDigest } from "./app/cron";
-import { logError, logInfo } from "./app/logger";
-import { prisma } from "./app/prisma";
-import { listTasksDebug } from "./app/taskService";
-import { checkFfmpegAvailability } from "./app/voice";
+import { Prisma, PrismaClient } from "@prisma/client";
+import { parseReminderCommand } from "./reminderParser";
+import { sendTelegramMessage } from "./telegramClient";
+import { TelegramUpdate } from "./types";
 
-const app = express();
-app.use(express.json({ limit: "3mb" }));
+const MOSCOW_TIMEZONE = "Europe/Moscow";
+const EXAMPLES_TEXT = [
+  "напомни завтра полить цветок",
+  "напомни завтра в 09:30 позвонить маме",
+  "напомни сегодня в 21:30 выключить плиту",
+].join("\n");
 
-const config = loadConfig();
-const bot = createBot(config);
-
-function unauthorized(res: Response): void {
-  res.status(401).json({ error: "Unauthorized" });
-}
-
-function requireCronAuth(req: Request, res: Response): boolean {
-  const auth = req.header("authorization") || "";
-  const expected = `Bearer ${config.cronSecret}`;
-  if (auth !== expected) {
-    unauthorized(res);
-    return false;
+function requireEnv(name: "TELEGRAM_BOT_TOKEN" | "CRON_SECRET"): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required`);
   }
-  return true;
+  return value;
 }
 
-async function markProcessedUpdate(chatId: string, updateId: number): Promise<boolean> {
+const port = Number(process.env.PORT || 3000);
+const telegramBotToken = requireEnv("TELEGRAM_BOT_TOKEN");
+const cronSecret = requireEnv("CRON_SECRET");
+
+const prisma = new PrismaClient();
+const app = express();
+app.use(express.json({ limit: "512kb" }));
+
+function logInfo(event: string, payload: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ level: "info", event, ...payload }));
+}
+
+function logError(event: string, error: unknown, payload: Record<string, unknown> = {}): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(JSON.stringify({ level: "error", event, message, ...payload }));
+}
+
+async function markUpdateProcessed(updateId: number): Promise<boolean> {
   try {
-    await prisma.processedUpdate.create({
-      data: {
-        chatId,
-        updateId,
-      },
-    });
+    await prisma.processedUpdate.create({ data: { id: updateId } });
     return true;
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return false;
     }
-    throw err;
+    throw error;
   }
 }
 
-app.get("/", (_req, res) => {
-  res.redirect("/health");
-});
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-app.get("/tasks", async (req, res) => {
-  const chatId = typeof req.query.chatId === "string" ? req.query.chatId : "";
-  if (!chatId) {
-    res.status(400).json({ error: "chatId is required" });
+async function processTelegramUpdate(update: TelegramUpdate): Promise<void> {
+  if (typeof update.update_id !== "number") {
     return;
   }
-  const rows = await listTasksDebug(chatId);
-  res.json(rows);
+
+  const inserted = await markUpdateProcessed(update.update_id);
+  if (!inserted) {
+    logInfo("telegram_update_duplicate", { updateId: update.update_id });
+    return;
+  }
+
+  const chatIdRaw = update.message?.chat?.id;
+  const chatId = chatIdRaw == null ? "" : String(chatIdRaw);
+  const text = update.message?.text?.trim() || "";
+
+  if (!chatId || !text) {
+    return;
+  }
+
+  const parsed = parseReminderCommand(text);
+  if (!parsed.ok) {
+    await sendTelegramMessage(telegramBotToken, chatId, EXAMPLES_TEXT);
+    return;
+  }
+
+  const reminder = await prisma.reminder.create({
+    data: {
+      chatId,
+      text: parsed.value.text,
+      remindAt: parsed.value.remindAt,
+      status: "scheduled",
+    },
+  });
+
+  await sendTelegramMessage(
+    telegramBotToken,
+    chatId,
+    `✅ Напомню ${parsed.value.remindAtLabel} (МСК): ${parsed.value.text}`
+  );
+
+  logInfo("reminder_scheduled", {
+    reminderId: reminder.id,
+    chatId,
+    remindAt: reminder.remindAt.toISOString(),
+    timezone: MOSCOW_TIMEZONE,
+  });
+}
+
+function isAuthorized(req: Request): boolean {
+  return req.header("authorization") === `Bearer ${cronSecret}`;
+}
+
+app.get("/health", (_req: Request, res: Response) => {
+  res.status(200).json({ status: "ok" });
 });
 
-app.post("/telegram/webhook", async (req, res) => {
-  let fallbackChatId: string | null = null;
+app.post("/telegram/webhook", (req: Request, res: Response) => {
+  res.status(200).json({ ok: true });
+
+  const update = req.body as TelegramUpdate;
+  void processTelegramUpdate(update).catch((error) => {
+    logError("telegram_webhook_process_failed", error);
+  });
+});
+
+app.post("/cron/tick", async (req: Request, res: Response) => {
+  if (!isAuthorized(req)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
   try {
-    const update = req.body as {
-      update_id?: number;
-      message?: {
-        chat?: { id?: number | string };
-        text?: string;
-        voice?: { file_id?: string; duration?: number; mime_type?: string };
-      };
-      callback_query?: { message?: { chat?: { id?: number | string } } };
-    };
-
-    if (!update || typeof update.update_id !== "number") {
-      res.status(400).json({ error: "invalid telegram update" });
-      return;
-    }
-
-    const chatIdRaw = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
-    const chatId = chatIdRaw != null ? String(chatIdRaw) : "unknown";
-    fallbackChatId = chatId !== "unknown" ? chatId : null;
-    const hasVoice = Boolean(update.message?.voice?.file_id);
-    const messageType = hasVoice ? "voice" : update.message?.text ? "text" : "other";
-    logInfo("telegram_update_received", {
-      updateId: update.update_id,
-      chatId,
-      messageType,
-      voiceFileId: update.message?.voice?.file_id,
-      duration: update.message?.voice?.duration,
-      mime: update.message?.voice?.mime_type,
+    const dueReminders = await prisma.reminder.findMany({
+      where: {
+        status: "scheduled",
+        remindAt: { lte: new Date() },
+      },
+      orderBy: { remindAt: "asc" },
+      take: 100,
     });
 
-    const inserted = await markProcessedUpdate(chatId, update.update_id);
-    if (!inserted) {
-      res.status(200).json({ ok: true, duplicate: true });
-      return;
-    }
+    let sent = 0;
 
-    await bot.handleUpdate(update as never);
-    res.status(200).json({ ok: true });
-  } catch (err) {
-    logError("telegram_webhook_failed", err);
-    if (fallbackChatId) {
-      try {
-        await bot.telegram.sendMessage(fallbackChatId, "Не удалось обработать сообщение. Попробуй еще раз или отправь текстом.");
-      } catch (sendErr) {
-        logError("telegram_webhook_fallback_reply_failed", sendErr, { chatId: fallbackChatId });
+    for (const reminder of dueReminders) {
+      await sendTelegramMessage(telegramBotToken, reminder.chatId, `🔔 Напоминание: ${reminder.text}`);
+
+      const updated = await prisma.reminder.updateMany({
+        where: {
+          id: reminder.id,
+          status: "scheduled",
+        },
+        data: {
+          status: "sent",
+          sentAt: new Date(),
+        },
+      });
+
+      if (updated.count === 1) {
+        sent += 1;
       }
     }
-    res.status(200).json({ ok: false });
+
+    logInfo("cron_tick_done", { due: dueReminders.length, sent });
+    res.status(200).json({ ok: true, due: dueReminders.length, sent });
+  } catch (error) {
+    logError("cron_tick_failed", error);
+    res.status(200).json({ ok: false, error: "tick_failed" });
   }
 });
 
-app.post("/cron/tick", async (req, res) => {
-  if (!requireCronAuth(req, res)) return;
-  try {
-    const result = await runCronTick(bot);
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    logError("cron_tick_failed", err);
-    res.status(500).json({ ok: false });
-  }
+app.use((error: unknown, _req: Request, res: Response, _next: () => void) => {
+  logError("unhandled_request_error", error);
+  res.status(500).json({ error: "Internal Server Error" });
 });
 
-app.post("/cron/daily", async (req, res) => {
-  if (!requireCronAuth(req, res)) return;
-  try {
-    const result = await runDailyDigest(bot);
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    logError("cron_daily_failed", err);
-    res.status(500).json({ ok: false });
-  }
-});
-
-app.listen(config.port, () => {
-  checkFfmpegAvailability();
-  logInfo("server_started", { port: config.port });
+app.listen(port, () => {
+  logInfo("server_started", { port, mode: "reminder_bot" });
 });
