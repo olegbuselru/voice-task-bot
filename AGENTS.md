@@ -1,5 +1,27 @@
 # AGENTS
 
+## Update (2026-02-23) — Minimal reminder bot reset
+
+- Backend reset to a minimal Telegram reminder bot in `backend/`.
+- Canonical backend surface is now:
+  - `GET /health`
+  - `POST /telegram/webhook`
+  - `POST /cron/tick` (Bearer `CRON_SECRET`)
+- Moscow timezone is fixed for parsing (`Europe/Moscow`) regardless of server timezone.
+- Prisma data model reduced to:
+  - `Reminder` (`scheduled|sent|canceled`, `remindAt`, `sentAt`)
+  - `ProcessedUpdate` (`id = update_id`) for webhook idempotency
+- Telegram parsing scope is intentionally strict:
+  - `напомни завтра <text>`
+  - `напомни завтра в HH:MM <text>`
+  - `напомни сегодня в HH:MM <text>`
+
+## Next steps
+
+- Deploy backend on Render with new migration `20260223174500_reset_minimal_reminder_bot`.
+- Ensure external scheduler hits `POST /cron/tick` every minute with `Authorization: Bearer <CRON_SECRET>`.
+- Rebind Telegram webhook to `https://<backend-url>/telegram/webhook`.
+
 ## Update (2026-02-20) — Telegram-only backend rebuild
 
 - Backend was rebuilt for a **Telegram-only task reminder product**.

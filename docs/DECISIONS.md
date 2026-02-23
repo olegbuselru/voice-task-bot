@@ -1,5 +1,14 @@
 # DECISIONS
 
+## 2026-02-23 — Reset backend to minimal Telegram reminder bot
+
+- Replaced therapist/task scheduler logic with a minimal reminder-only backend.
+- Canonical API reduced to `GET /health`, `POST /telegram/webhook`, `POST /cron/tick`.
+- Reminder persistence is Prisma/PostgreSQL-first to survive restarts and Render sleep.
+- Time parsing is fixed to `Europe/Moscow` and supports only three explicit Russian command patterns.
+- Reminder dispatch is external-cron driven (`/cron/tick`) instead of in-process timers.
+- Webhook idempotency is enforced via `ProcessedUpdate.id = update_id` primary key.
+
 ## 2026-02-16 — Therapist MVP: separate Appointment model (keep Task compatibility)
 
 - Added dedicated `Appointment` + `TherapistSettings` models instead of overloading `Task`.
