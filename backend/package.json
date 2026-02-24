@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "test": "npm run build",
+    "test:reminder-regression": "npm run build && node scripts/reminder-regression.cjs",
     "db:generate": "prisma generate",
     "db:migrate:deploy": "prisma migrate deploy",
     "prisma:validate": "prisma validate"
