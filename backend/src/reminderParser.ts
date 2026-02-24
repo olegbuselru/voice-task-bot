@@ -5,12 +5,14 @@ interface ParseOk {
   value: {
     text: string;
     remindAt: Date;
-    remindAtLabel: string;
+    remindDateLabel: string;
+    remindTimeLabel: string;
   };
 }
 
 interface ParseFail {
   ok: false;
+  reason: "missing_date" | "invalid_time" | "empty_text" | "time_in_past" | "invalid_format";
 }
 
 export type ParseReminderResult = ParseOk | ParseFail;
@@ -70,6 +72,14 @@ function normalizeInput(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
+function stripCommandPrefix(value: string): string {
+  return value.replace(/^напомни\s+/i, "").trim();
+}
+
+function cleanTaskText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function parseTime(hourRaw: string, minuteRaw: string): { hour: number; minute: number } | null {
   const hour = Number(hourRaw);
   const minute = Number(minuteRaw);
@@ -82,62 +92,93 @@ function parseTime(hourRaw: string, minuteRaw: string): { hour: number; minute: 
   return { hour, minute };
 }
 
+function defaultTodayTime(nowUtc: Date): { hour: number; minute: number } {
+  const nowMsk = new Date(nowUtc.getTime() + MOSCOW_OFFSET_HOURS * 60 * 60 * 1000);
+  const hour = nowMsk.getUTCHours();
+  if (hour < 10) {
+    return { hour: 10, minute: 0 };
+  }
+
+  const nextHour = hour + 1;
+  if (nextHour > 23) {
+    return { hour: 23, minute: 59 };
+  }
+  return { hour: nextHour, minute: 10 };
+}
+
 export function parseReminderCommand(input: string, nowUtc = new Date()): ParseReminderResult {
   const normalized = normalizeInput(input);
+  const withoutPrefix = stripCommandPrefix(normalized);
 
-  const tomorrowWithTime = normalized.match(/^напомни\s+завтра\s+в\s+(\d{1,2}):(\d{2})\s+(.+)$/i);
-  const todayWithTime = normalized.match(/^напомни\s+сегодня\s+в\s+(\d{1,2}):(\d{2})\s+(.+)$/i);
-  const tomorrowDefault = normalized.match(/^напомни\s+завтра\s+(.+)$/i);
+  const tomorrowWithTime = withoutPrefix.match(/^завтра\s+в\s+(\d{1,2}):(\d{2})\s+(.+)$/i);
+  const todayWithTime = withoutPrefix.match(/^сегодня\s+в\s+(\d{1,2}):(\d{2})\s+(.+)$/i);
+  const tomorrowDefault = withoutPrefix.match(/^завтра\s+(.+)$/i);
+  const todayDefault = withoutPrefix.match(/^сегодня\s+(.+)$/i);
 
   const moscowNow = getMoscowNowParts(nowUtc);
   let year = moscowNow.year;
   let month = moscowNow.month;
   let day = moscowNow.day;
-  let hour = 10;
-  let minute = 0;
+  let hour = -1;
+  let minute = -1;
   let text = "";
 
   if (tomorrowWithTime) {
     const time = parseTime(tomorrowWithTime[1], tomorrowWithTime[2]);
     if (!time) {
-      return { ok: false };
+      return { ok: false, reason: "invalid_time" };
     }
     ({ year, month, day } = addDaysMoscow(moscowNow.year, moscowNow.month, moscowNow.day, 1));
     hour = time.hour;
     minute = time.minute;
-    text = tomorrowWithTime[3].trim();
+    text = cleanTaskText(tomorrowWithTime[3]);
   } else if (todayWithTime) {
     const time = parseTime(todayWithTime[1], todayWithTime[2]);
     if (!time) {
-      return { ok: false };
+      return { ok: false, reason: "invalid_time" };
     }
     hour = time.hour;
     minute = time.minute;
-    text = todayWithTime[3].trim();
+    text = cleanTaskText(todayWithTime[3]);
   } else if (tomorrowDefault) {
     ({ year, month, day } = addDaysMoscow(moscowNow.year, moscowNow.month, moscowNow.day, 1));
-    text = tomorrowDefault[1].trim();
+    hour = 10;
+    minute = 0;
+    text = cleanTaskText(tomorrowDefault[1]);
+  } else if (todayDefault) {
+    const todayTime = defaultTodayTime(nowUtc);
+    hour = todayTime.hour;
+    minute = todayTime.minute;
+    text = cleanTaskText(todayDefault[1]);
+  } else if (/\b(сегодня|завтра)\b/i.test(withoutPrefix)) {
+    return { ok: false, reason: "invalid_format" };
   } else {
-    return { ok: false };
+    return { ok: false, reason: "missing_date" };
+  }
+
+  if (hour < 0 || minute < 0) {
+    return { ok: false, reason: "invalid_format" };
   }
 
   if (!text) {
-    return { ok: false };
+    return { ok: false, reason: "empty_text" };
   }
 
   const remindAt = toUtcFromMoscowDateTime(year, month, day, hour, minute);
   if (remindAt.getTime() <= nowUtc.getTime()) {
-    return { ok: false };
+    return { ok: false, reason: "time_in_past" };
   }
 
-  const remindAtLabel = `${pad2(day)}.${pad2(month)} ${pad2(hour)}:${pad2(minute)}`;
+  const remindDateLabel = `${pad2(day)}.${pad2(month)}`;
+  const remindTimeLabel = `${pad2(hour)}:${pad2(minute)}`;
 
   return {
     ok: true,
     value: {
       text,
       remindAt,
-      remindAtLabel,
+      remindDateLabel,
+      remindTimeLabel,
     },
   };
 }

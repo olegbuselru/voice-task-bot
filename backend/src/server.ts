@@ -1,15 +1,17 @@
 import express, { Request, Response } from "express";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { extractUserInput } from "./inputExtractor";
 import { parseReminderCommand } from "./reminderParser";
+import {
+  buildConfirmationReply,
+  buildMissingDateReply,
+  buildMissingTextReply,
+  buildParseFailedReply,
+} from "./reminderReplies";
 import { sendTelegramMessage } from "./telegramClient";
 import { TelegramUpdate } from "./types";
 
 const MOSCOW_TIMEZONE = "Europe/Moscow";
-const EXAMPLES_TEXT = [
-  "напомни завтра полить цветок",
-  "напомни завтра в 09:30 позвонить маме",
-  "напомни сегодня в 21:30 выключить плиту",
-].join("\n");
 
 function requireEnv(name: "TELEGRAM_BOT_TOKEN" | "CRON_SECRET"): string {
   const value = process.env[name]?.trim();
@@ -53,29 +55,48 @@ async function processTelegramUpdate(update: TelegramUpdate): Promise<void> {
     return;
   }
 
+  const extracted = extractUserInput(update);
+  if (!extracted) {
+    return;
+  }
+
+  logInfo("telegram_update", {
+    updateId: update.update_id,
+    chatId: extracted.chatId,
+    type: extracted.type,
+    textPreview: (extracted.userText ?? "").slice(0, 120),
+  });
+
   const inserted = await markUpdateProcessed(update.update_id);
   if (!inserted) {
     logInfo("telegram_update_duplicate", { updateId: update.update_id });
     return;
   }
 
-  const chatIdRaw = update.message?.chat?.id;
-  const chatId = chatIdRaw == null ? "" : String(chatIdRaw);
-  const text = update.message?.text?.trim() || "";
-
-  if (!chatId || !text) {
+  if (!extracted.userText) {
+    await sendTelegramMessage(telegramBotToken, extracted.chatId, buildMissingTextReply());
     return;
   }
 
-  const parsed = parseReminderCommand(text);
+  const parsed = parseReminderCommand(extracted.userText);
   if (!parsed.ok) {
-    await sendTelegramMessage(telegramBotToken, chatId, EXAMPLES_TEXT);
+    logInfo("parse_failed", {
+      reason: parsed.reason,
+      textPreview: extracted.userText.slice(0, 120),
+    });
+
+    if (parsed.reason === "missing_date") {
+      await sendTelegramMessage(telegramBotToken, extracted.chatId, buildMissingDateReply());
+      return;
+    }
+
+    await sendTelegramMessage(telegramBotToken, extracted.chatId, buildParseFailedReply());
     return;
   }
 
   const reminder = await prisma.reminder.create({
     data: {
-      chatId,
+      chatId: extracted.chatId,
       text: parsed.value.text,
       remindAt: parsed.value.remindAt,
       status: "scheduled",
@@ -84,14 +105,15 @@ async function processTelegramUpdate(update: TelegramUpdate): Promise<void> {
 
   await sendTelegramMessage(
     telegramBotToken,
-    chatId,
-    `✅ Напомню ${parsed.value.remindAtLabel} (МСК): ${parsed.value.text}`
+    extracted.chatId,
+    buildConfirmationReply(parsed.value.remindDateLabel, parsed.value.remindTimeLabel, parsed.value.text)
   );
 
-  logInfo("reminder_scheduled", {
+  logInfo("reminder_created", {
+    chatId: extracted.chatId,
     reminderId: reminder.id,
-    chatId,
-    remindAt: reminder.remindAt.toISOString(),
+    remindAtMsk: `${parsed.value.remindDateLabel} ${parsed.value.remindTimeLabel}`,
+    textPreview: parsed.value.text.slice(0, 120),
     timezone: MOSCOW_TIMEZONE,
   });
 }

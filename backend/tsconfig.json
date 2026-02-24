@@ -19,6 +19,8 @@
     "src/server.ts",
     "src/telegramClient.ts",
     "src/reminderParser.ts",
+    "src/inputExtractor.ts",
+    "src/reminderReplies.ts",
     "src/types.ts"
   ],
   "exclude": ["node_modules", "dist"]

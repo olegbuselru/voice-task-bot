@@ -3,6 +3,16 @@ export interface TelegramUpdate {
   message?: {
     message_id?: number;
     text?: string;
+    caption?: string;
+    voice?: {
+      transcript?: string;
+    };
+    audio?: {
+      transcript?: string;
+    };
+    document?: {
+      transcript?: string;
+    };
     chat?: {
       id?: number | string;
     };
