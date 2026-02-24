@@ -7,8 +7,13 @@ This backend is intentionally minimal and production-ready for Render.
 - `GET /health` -> `200 {"status":"ok"}`
 - `POST /telegram/webhook` -> receives Telegram updates and schedules reminders
 - `POST /cron/tick` -> protected cron endpoint to deliver due reminders
+- Owner debug command: `/tick` (works only for `OWNER_CHAT_ID`)
 - Persistent storage in PostgreSQL via Prisma (survives restarts/sleep)
 - Moscow timezone logic (`Europe/Moscow`) for parsing reminder commands
+- Text commands in chat:
+  - `Коробка` (last sent reminders)
+  - `Все задачи` (future scheduled, tomorrow+)
+  - `Что сегодня` (today scheduled)
 
 ## Supported reminder commands (Russian)
 
@@ -25,6 +30,7 @@ Use placeholders only (do not commit real values):
 - `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB_NAME`
 - `TELEGRAM_BOT_TOKEN=BOT_TOKEN`
 - `CRON_SECRET=CRON_SECRET_VALUE`
+- `OWNER_CHAT_ID=123456789` (optional, enables `/tick`)
 - `PORT=3000` (optional locally; Render provides it)
 
 ## Local run
@@ -58,6 +64,8 @@ Example:
 curl -X POST "https://<backend-url>/cron/tick" \
   -H "Authorization: Bearer <CRON_SECRET_VALUE>"
 ```
+
+If cron is not configured, reminders are created but will not be auto-delivered until `/cron/tick` is called.
 
 ## Render deployment
 

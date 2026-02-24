@@ -1,54 +1,50 @@
 # Cron setup (external scheduler)
 
-Required endpoint security:
+Use an external scheduler to call `POST /cron/tick` every minute.
 
-- `POST /cron/tick`
-- `POST /cron/daily`
-- Header: `Authorization: Bearer <CRON_SECRET>`
+- URL: `https://<backend-url>/cron/tick`
+- Method: `POST`
+- Header: `Authorization: Bearer <CRON_SECRET_VALUE>`
 
-Timezone target: `Europe/Moscow`.
+Manual curl check:
 
-## Option A: cron-job.org (quick)
+```bash
+curl -X POST "https://<backend-url>/cron/tick" \
+  -H "Authorization: Bearer <CRON_SECRET_VALUE>"
+```
 
-1. Create job `tick`:
-   - URL: `https://voice-task-bot-backend.onrender.com/cron/tick`
-   - Method: `POST`
-   - Every minute
-   - Header: `Authorization: Bearer CRON_SECRET`
-2. Create job `daily`:
-   - URL: `https://voice-task-bot-backend.onrender.com/cron/daily`
-   - Method: `POST`
-   - Schedule: `09:00` Europe/Moscow
-   - Header: `Authorization: Bearer CRON_SECRET`
+## Setup steps (3–5 steps)
 
-## Option B: GitHub Actions schedule
+1. Set `CRON_SECRET` env in Render backend service.
+2. Confirm endpoint auth works:
+   - no header -> `401`
+   - with header -> `200`
+3. Create external cron job with 1-minute schedule.
+4. Configure request as `POST` with `Authorization: Bearer <CRON_SECRET_VALUE>`.
+5. Verify backend logs contain `cron_tick_start` and `cron_tick_done`.
 
-Create workflow with two schedules:
+## Option A: cron-job.org
+
+- URL: `https://<backend-url>/cron/tick`
+- Method: `POST`
+- Schedule: every minute
+- Header: `Authorization: Bearer <CRON_SECRET_VALUE>`
+
+## Option B: GitHub Actions
 
 ```yaml
-name: backend-cron
+name: backend-cron-tick
 on:
   schedule:
-    - cron: '* * * * *' # tick every minute
-    - cron: '0 6 * * *' # 09:00 MSK (UTC+3)
+    - cron: '* * * * *'
 jobs:
-  run:
+  tick:
     runs-on: ubuntu-latest
     steps:
-      - name: Tick
-        if: github.event.schedule == '* * * * *'
+      - name: Call cron tick
         run: |
           curl -sS -X POST "$BASE_URL/cron/tick" \
-            -H "Authorization: Bearer $CRON_SECRET"
-      - name: Daily digest
-        if: github.event.schedule == '0 6 * * *'
-        run: |
-          curl -sS -X POST "$BASE_URL/cron/daily" \
             -H "Authorization: Bearer $CRON_SECRET"
 ```
 
 Set repository secrets: `BASE_URL`, `CRON_SECRET`.
-
-## Option C: Render Cron (optional)
-
-If available in Render plan, configure two cron jobs with same URLs and headers.
